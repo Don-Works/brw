@@ -8,28 +8,14 @@ code-execution tool:
 brw_chromium.brw_open({ url: "https://example.com" });
 ```
 
-Tool names, arguments and return shapes are the ones in [../SKILL.md](../SKILL.md);
-that file is the reference for what each call does. This file covers only what the
-gateway changes: discovery, batching, and output handling.
-
-Nothing here is specific to one gateway. Any harness that multiplexes MCP servers
-into namespaces and runs JavaScript through a code-execution tool produces this
-situation; brw only needs the calling convention below to be the same.
-
-## Which situation am I in
-
-| you see | read |
-|---|---|
-| `brw_open`, `brw_snapshot`, `brw_identity` in your tool list | ../SKILL.md, call them directly |
-| a code-execution tool (`execute_code` / `call_tool`) and no `brw_*` tools | this file |
+Tool contracts remain in [the main skill](../SKILL.md) and its references.
+This file covers gateway discovery, batching and output handling.
 
 ## One namespace per profile, and the set grows
 
-Enumerate first; never assume a namespace exists or that there is only one:
-
-```js
-help();   // prints every namespace, e.g. brw_chromium (63 tools), brw_chromium_work (63 tools)
-```
+Use the gateway's discovery entrypoint to enumerate installed namespaces; never
+assume one exists or that only one profile is available. On Maix, use
+`mx.list_servers` and `mx__search_tools`.
 
 Gateway discovery can cache namespaces and tool schemas. Rediscover after adding a
 profile; if it remains absent, refresh the gateway session. Map each discovered `brw*`
@@ -45,7 +31,7 @@ for (const ns of [brw_chromium, brw_chromium_work]) {
 
 Pick by what the user asked for. If two profiles could match, show the list and ask.
 A namespace whose identity says `headless` is the lane for public, signed-out work;
-../SKILL.md ("Headless or the signed-in browser") has the table for choosing it.
+[Transport lanes](transports.md) has the selection table.
 
 `identity.transport` decides capabilities exactly as in ../SKILL.md: `direct-cdp` has
 incognito contexts and `brw_cookies`, `extension-bridge` has Chrome tab groups and
@@ -80,37 +66,17 @@ with `mx.reload_server`, and inspect the exact `brw_recipe_run` or `brw_read`
 signature with `mx__search_tools`. A pending surface needs acceptance by the
 authorized operator or deployment workflow; repeated reloads will not accept it.
 
-## Batch the flow, not the call
+## Batch known steps
 
-The round trip is the expensive part here. Put the whole flow in ONE `execute_code`
-script; do not spend one gateway call per browser action.
+Use the [golden path](../SKILL.md#the-golden-path) through the selected namespace.
+Combine already-known reads/actions in one code-execution script; `brw_batch`
+still reduces tab resolution and returns one closing observation. Split at a
+pending approval or a decision that needs new evidence.
 
-```js
-const ns = brw_chromium;
-const r = ns.brw_open({ url: "https://app.example.test" });
-const tab = String((r.tab || r).id);                        // ids may arrive numeric — stringify
-const s = ns.brw_snapshot({ tab_id: tab });
-const email = s.elements.find(e => e.role === "textbox" && /email/i.test(e.name)).ref;
-const submit = s.elements.find(e => e.role === "button" && /continue|sign in/i.test(e.name)).ref;
-ns.brw_fill({ ref: email, text: "a@example.com", tab_id: tab });
-ns.brw_batch({ steps: [
-  { action: "focus_tab", id: tab },
-  { action: "click", ref: submit },
-  { action: "wait", condition: "text:Signed in", timeout_ms: 8000 },
-]});
-const rd = ns.brw_read({ tab_id: tab, include: ["main"], max_chars: 2000 });
-print(rd.title, rd.main.slice(0, 200));
-ns.brw_close_tab({ tab_id: tab });
-```
-
-`brw_batch` still wins inside a script: one tab resolution, one observation at the end.
-Two levels of batching compose — script for the flow, `brw_batch` for the steps.
-
-Use `text` for `fill`/`type`, `value` for `select`/`assert_value`, and both `ref`
-and `text` for `assert_text`. Pin the tab with `focus_tab` in a batch. Assert
-before navigating away from the refs' document; after navigation use `find_act`
-or a fresh snapshot. Put cleanup in `finally` in an executable workflow so a
-failed assertion cannot leak the tab.
+Batch `fill`/`type` use `text`; `select`/`assert_value` use `value`;
+`assert_text` needs `ref` and `text`. Pin the tab with `focus_tab`. After navigation,
+use `find_act` or a fresh snapshot. Put tab/context cleanup in `finally` so a
+failed assertion cannot leak them.
 
 ## Output handling
 

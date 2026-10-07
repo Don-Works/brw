@@ -56,22 +56,15 @@ Pick the lane per request. Do not ask the user when the table decides it:
 | `brw_snapshot {include_ax:true}` | no AX tree | AX enrichment available | AX enrichment available | AX enrichment available | AX enrichment available |
 | tab ids | Chrome tab ids, e.g. `"235935869"` | CDP target ids, e.g. `"79F95D14…"` | CDP target ids, e.g. `"79F95D14…"` | CDP target ids | CDP target ids |
 
-All five transports ship in brw, and an unavailable capability is a property of
-this profile's lane, not of the product; an operator can run a second daemon on
-another transport. Most tools are listed and fully described in `tools/list` on
-every lane and fail only when called. The seven page-environment tools are the
-exception: they are DevTools session overrides that the bridge's attach/detach
-cycle would silently drop between calls, so on the bridge they are not
-advertised and an agent never spends a call finding out.
+A capability belongs to the profile's transport. Check its advertised schema and
+the table above; calls can still return named capability refusals. The bridge's
+attach/detach cycle cannot retain DevTools session overrides between calls, so
+those environment tools are not advertised there.
 
-`brw_set_download_path` is the one of those seven that three other lanes also
-lack, and not for want of the protocol. On `chrome-opt-in-cdp` and `remote-cdp`
-the command applies to a whole browser context brw did not open, so pointing it
-at brw's staging directory would move files somebody else downloads by hand;
-downloads are still reported there, they just carry no path. On `off-host-cdp`
-the directory it named would be created on the provider's machine. If a flow
-needs the downloaded bytes — a digest assertion, or capturing the file as an
-artifact — ask for a direct-CDP profile.
+On `chrome-opt-in-cdp` and `remote-cdp`, changing a browser-wide download path
+would redirect the human's downloads. On `off-host-cdp`, it names the provider's
+disk. For downloaded bytes needed by a digest assertion or artifact capture,
+use a brw-owned direct-CDP profile.
 
 `chrome-opt-in-cdp` is the lane a person has to turn on for themselves, so you
 will rarely see it: it needs Chrome 144+ and a human switching remote debugging
@@ -98,7 +91,7 @@ run or deleted by one. The provider states a session lifetime past which every
 call errors with *"the plugin-supplied browser session has expired"*; `GET
 /health` on the browser host names the session and that expiry.
 
-When incognito is unavailable and you need isolation: use a second brw profile (two
-signed-in identities), or ask the operator for a direct-CDP profile (`brwd` without
-`--bridge`), which also unlocks `brw_cookies` for scrubbing auth state between runs.
+When incognito is unavailable and you need isolation, use another intended
+profile or ask the operator for a brw-owned direct-CDP profile. Never scrub the
+human's authentication state to create test isolation.
 
