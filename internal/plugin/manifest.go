@@ -1,12 +1,4 @@
-// Package plugin is brw's only extension point: an operator-installed program
-// or directory, described by a JSON manifest, that the daemon may call for one
-// narrowly defined job.
-//
-// The capability set is a closed allowlist (see capability.go). brw does not
-// sandbox a plugin — an exec provider runs as the daemon's own user — so the
-// trust boundary is the permission on the plugin directory, and the loader
-// enforces the parts of that boundary it can see. docs/plugins.md states the
-// model in full, including what it deliberately does not promise.
+// Package plugin is brw's only extension point: an operator-installed program or directory, described by a JSON manifest, that the daemon may call for one narrowly defined job.
 package plugin
 
 import (
@@ -25,8 +17,7 @@ import (
 
 const ManifestSchemaVersion = 1
 
-// MaxManifestBytes bounds one manifest file. A manifest is a dozen short
-// fields; anything larger is a mistake or an attempt to make the parser work.
+// MaxManifestBytes bounds one manifest file.
 const MaxManifestBytes = 64 << 10
 
 // CredentialKind values.
@@ -35,36 +26,19 @@ const (
 	CredentialKindFile = "file"
 )
 
-// CredentialKinds is the closed domain of provider backends, declared once so
-// the validator, the loader and the test that enumerates them read from the
-// same list. Every kind on it reaches the same capability, so every kind has to
-// be classified by both switches over Kind and held to the same trust boundary;
-// a sibling added to one of them and missed by the other is how a gate stops
-// covering the thing it gates.
+// CredentialKinds is the closed domain of provider backends, declared once so the validator, the loader and the test that enumerates them read from the same list.
 var CredentialKinds = []string{CredentialKindExec, CredentialKindFile}
 
 // BrowserKind values.
 const BrowserKindExec = "exec"
 
-// BrowserKinds is the closed domain of browser-provider backends. One kind
-// ships: a program the operator wrote that mints a session against whatever
-// cloud service they use. Six named services would be six auth stories and six
-// breakage surfaces inside brw; the capability carries them instead.
-//
-// Declared once, for the same reason CredentialKinds is: every kind on it
-// reaches the same capability, so a sibling added to one switch over Kind and
-// missed by another is how a gate stops covering what it gates. A test
-// enumerates this list.
+// BrowserKinds is the closed domain of browser-provider backends.
 var BrowserKinds = []string{BrowserKindExec}
 
 // ReferenceToken is the single argv placeholder an exec provider substitutes.
 const ReferenceToken = "{reference}"
 
-// SessionToken is the argv placeholder a browser provider's teardown command
-// substitutes with the id of the session being released. Deliberately not
-// ReferenceToken: a teardown argv is built from a value the PROVIDER printed,
-// and reusing the credential token would make "which substitution is this?"
-// a question the reader has to answer from context.
+// SessionToken is the argv placeholder a browser provider's teardown command substitutes with the id of the session being released.
 const SessionToken = "{session}"
 
 type Manifest struct {
@@ -81,13 +55,6 @@ type Manifest struct {
 }
 
 // BrowserProviderSpec configures the one browser-provider backend brw ships.
-//
-// Command mints a session and prints one JSON envelope (see ParseSessionEnvelope).
-// Teardown releases it and must carry SessionToken exactly once, so the release
-// is aimed at the session that was opened rather than at whatever the provider
-// considers current. Credential names a reference resolved through the
-// credential.read holder at the moment of the call and written to the program's
-// STDIN — never its argv, which every process on the machine can read.
 type BrowserProviderSpec struct {
 	Kind       string   `json:"kind"`
 	Command    []string `json:"command,omitempty"`
@@ -108,10 +75,7 @@ var (
 	versionPattern  = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?$`)
 )
 
-// ParseManifest decodes one manifest strictly. Unknown fields are refused so a
-// misspelled setting is an error rather than a silently ignored one — the
-// difference between "my timeout is not applying" and a plugin running with a
-// default the operator never chose.
+// ParseManifest decodes one manifest strictly.
 func ParseManifest(data []byte) (Manifest, error) {
 	if len(data) > MaxManifestBytes {
 		return Manifest{}, fmt.Errorf("plugin manifest exceeds %d bytes", MaxManifestBytes)
@@ -171,8 +135,7 @@ func ValidateManifest(manifest Manifest) error {
 	case wantsCredential && manifest.Credential == nil:
 		problems = append(problems, errors.New("credential.read requires a credential block naming the provider"))
 	case !wantsCredential && manifest.Credential != nil:
-		// A configured provider with no grant reads as working and is not. The
-		// grant is the thing the operator reviews, so it is the thing required.
+
 		problems = append(problems, errors.New("a credential block requires the credential.read capability"))
 	case wantsCredential:
 		if err := validateCredentialSpec(*manifest.Credential); err != nil {
@@ -184,8 +147,7 @@ func ValidateManifest(manifest Manifest) error {
 	case wantsBrowser && manifest.Browser == nil:
 		problems = append(problems, errors.New("browser.provider requires a browser block naming the backend"))
 	case !wantsBrowser && manifest.Browser != nil:
-		// Same reason as the credential half: a configured backend with no grant
-		// reads as working and is not, and the grant is what an operator reviews.
+
 		problems = append(problems, errors.New("a browser block requires the browser.provider capability"))
 	case wantsBrowser:
 		if err := validateBrowserSpec(*manifest.Browser); err != nil {
@@ -208,10 +170,7 @@ func validateBrowserSpec(spec BrowserProviderSpec) error {
 	switch spec.Kind {
 	case BrowserKindExec:
 		problems = append(problems, validateBrowserCommand("browser command", spec.Command, 0))
-		// Exactly one, for the reason the credential command needs exactly one
-		// reference: a teardown that never sees the session id releases whatever
-		// the provider decides is current, which on a shared account is somebody
-		// else's browser.
+
 		problems = append(problems, validateBrowserCommand("browser teardown", spec.Teardown, 1))
 	default:
 		problems = append(problems, fmt.Errorf("browser kind must be one of %v", BrowserKinds))
@@ -219,14 +178,8 @@ func validateBrowserSpec(spec BrowserProviderSpec) error {
 	return errors.Join(problems...)
 }
 
-// maxBrowserTimeoutMS bounds how long a mint or a teardown may take. A provider
-// that can block for an hour blocks the daemon's startup behind it.
 const maxBrowserTimeoutMS = 60_000
 
-// validateBrowserCommand holds a browser provider's argv to the same rules the
-// credential one lives under, and pins how many SessionToken placeholders it
-// must carry: none for the mint, which has no session yet, and exactly one for
-// the teardown, which is aimed at a specific one.
 func validateBrowserCommand(what string, command []string, wantSessionTokens int) error {
 	if len(command) == 0 {
 		return fmt.Errorf("the exec browser kind requires a %s", what)
@@ -251,17 +204,12 @@ func validateBrowserCommand(what string, command []string, wantSessionTokens int
 		problems = append(problems, fmt.Errorf("%s must contain the %s token exactly %d times, found %d", what, SessionToken, wantSessionTokens, sessionTokens))
 	}
 	if referenceTokens != 0 {
-		// The credential reaches this provider on stdin, never in its argv. A
-		// manifest that spells the credential token here is asking for a
-		// substitution that will not happen, and shipping it would leave an
-		// operator believing their key was passed.
+
 		problems = append(problems, fmt.Errorf("%s must not contain the %s token; a browser provider receives its credential on stdin, not in its argv", what, ReferenceToken))
 	}
 	return errors.Join(problems...)
 }
 
-// maxCredentialTimeoutMS bounds the deadline an operator can hand a provider.
-// A provider that can block for an hour blocks the recipe step behind it.
 const maxCredentialTimeoutMS = 60_000
 
 func validateCredentialSpec(spec CredentialProviderSpec) error {
@@ -308,26 +256,12 @@ func validateCredentialCommand(command []string) error {
 		problems = append(problems, errors.New("credential command argument is too long"))
 	}
 	if tokens != 1 {
-		// Zero is the dangerous one: a provider that never sees the reference
-		// answers every request with the same secret, and the recipe that asked
-		// for the staging password gets production's.
+
 		problems = append(problems, fmt.Errorf("credential command must contain the %s token exactly once, found %d", ReferenceToken, tokens))
 	}
 	return errors.Join(problems...)
 }
 
-// validateProgramPath pins which binary a manifest names. Shared by every
-// provider kind that execs, because the reason is the same for all of them and
-// a second copy of this rule is a second place for it to go stale.
-//
-// A bare name such as "op" is resolved from the daemon's PATH at every call, so
-// the manifest an operator reviewed does not decide what runs: whoever controls
-// PATH, or can write an earlier directory on it, does. The path must also be
-// already clean, because "/usr/bin/../../tmp/op" reads as a reviewed system
-// binary and is not one, and it must carry NEITHER substitution token, which
-// would let a reference name or a provider-printed session id spell a different
-// program than the one the loader checked. The program's mode, owner and
-// ancestors are checked separately at load, where the filesystem is available.
 func validateProgramPath(what, program string) error {
 	if strings.TrimSpace(program) == "" {
 		return fmt.Errorf("%s is empty", what)
@@ -346,9 +280,6 @@ func validateProgramPath(what, program string) error {
 	return nil
 }
 
-// substituteToken builds the argv for one call. It replaces the token in place
-// rather than appending, so an argv like ["op","read","op://{reference}"] keeps
-// its scheme prefix. No shell is involved at any point.
 func substituteToken(command []string, token, value string) []string {
 	argv := make([]string, len(command))
 	for index, argument := range command {

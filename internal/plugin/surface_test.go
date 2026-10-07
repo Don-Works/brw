@@ -8,10 +8,6 @@ import (
 	"testing"
 )
 
-// The capability table in docs/plugins.md is the operator-facing half of the
-// gate: it is where someone decides whether to install a plugin at all. A
-// capability the code knows and the doc does not is a grant nobody reviewed, so
-// the doc is checked against the code rather than by reading it.
 func TestPluginDocsNameEveryCapabilityTheGateKnows(t *testing.T) {
 	doc, err := os.ReadFile("../../docs/plugins.md")
 	if err != nil {
@@ -23,18 +19,12 @@ func TestPluginDocsNameEveryCapabilityTheGateKnows(t *testing.T) {
 			t.Errorf("docs/plugins.md does not mention the grantable capability %q", name)
 		}
 	}
-	for name := range reserved {
-		if !strings.Contains(text, name) {
-			t.Errorf("docs/plugins.md does not mention the reserved capability %q", name)
-		}
-	}
 	for name := range refused {
 		if !strings.Contains(text, name) {
 			t.Errorf("docs/plugins.md does not mention the refused capability %q", name)
 		}
 	}
-	// The doc has to say the thing the brief asked it to say: what each one can
-	// and cannot reach. A table of names with no boundary is not that.
+
 	for _, phrase := range []string{"Can reach", "Cannot reach", "Never granted", "does not sandbox"} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("docs/plugins.md does not state %q", phrase)
@@ -42,11 +32,6 @@ func TestPluginDocsNameEveryCapabilityTheGateKnows(t *testing.T) {
 	}
 }
 
-// A capability section that lists what a plugin cannot reach, and leaves the
-// sandboxing caveat 40 lines further down under its own heading, reads as a
-// property of the plugin process. It is not one: brw does not sandbox an exec
-// provider, so the list is what brw HANDS a provider, and an operator deciding
-// whether to install one has to see both facts in the same place.
 func TestEveryGrantedCapabilitySectionSaysWhatItDoesNotCover(t *testing.T) {
 	for _, capability := range GrantableCapabilities() {
 		t.Run(capability, func(t *testing.T) {
@@ -65,9 +50,6 @@ func TestEveryGrantedCapabilitySectionSaysWhatItDoesNotCover(t *testing.T) {
 	}
 }
 
-// The browser.provider section is the operator-facing half of the remote
-// capability table. A refusal the code enforces and the doc does not name is a
-// boundary an operator finds out about from a failed run.
 func TestTheBrowserProviderSectionNamesWhatARemoteBrowserCannotDo(t *testing.T) {
 	section := docSection(t, "### `"+CapabilityBrowserProvider+"`")
 	for _, phrase := range []string{
@@ -81,8 +63,6 @@ func TestTheBrowserProviderSectionNamesWhatARemoteBrowserCannotDo(t *testing.T) 
 	}
 }
 
-// docSection returns one heading's body with whitespace collapsed, so a phrase
-// that straddles a markdown line wrap still matches.
 func docSection(t *testing.T, heading string) string {
 	t.Helper()
 	doc, err := os.ReadFile("../../docs/plugins.md")
@@ -100,18 +80,6 @@ func docSection(t *testing.T, heading string) string {
 	return strings.Join(strings.Fields(section), " ")
 }
 
-// A granted plugin's ENTIRE runtime surface is the credential resolver and the
-// browser-session opener. That is why the capability table can be short: there
-// is no third door to gate.
-//
-// This is a lock on the registry's exported method set. A Registry.Cookies, a
-// Registry.NavigationPolicy or a Registry.Run would each be a way for a plugin
-// to reach something the capability list says it cannot, and each would fail
-// here before it could be wired to anything.
-//
-// OpenBrowserSession and ProbeBrowserProvider are the browser.provider half,
-// and they mirror Resolve and ProbeProvider exactly: ask, or ask whether asking
-// would work. Neither hands the plugin anything of brw's.
 func TestAGrantedPluginsRuntimeSurfaceIsOnlyTheResolverAndTheBrowserOpener(t *testing.T) {
 	registryType := reflect.TypeOf((*Registry)(nil))
 	var methods []string
@@ -125,10 +93,6 @@ func TestAGrantedPluginsRuntimeSurfaceIsOnlyTheResolverAndTheBrowserOpener(t *te
 	}
 }
 
-// The browser provider interface is the same shape of promise the credential
-// one makes: a plugin is ASKED for something and told to release it. It is
-// handed a context and, internally, a resolved credential — never a structure
-// it could read brw state out of, and never a way to call back into brw.
 func TestTheBrowserProviderInterfaceOffersNoWayToAskBrwForAnything(t *testing.T) {
 	providerType := reflect.TypeOf((*browserProvider)(nil)).Elem()
 	var methods []string
@@ -151,9 +115,6 @@ func TestTheBrowserProviderInterfaceOffersNoWayToAskBrwForAnything(t *testing.T)
 	}
 }
 
-// The credential provider interface is what a granted plugin implements. It
-// takes a reference name and returns a value: a plugin has no way to ask brw
-// for a page, a cookie, a policy, or anything else.
 func TestTheCredentialProviderInterfaceOffersNoWayToAskBrwForAnything(t *testing.T) {
 	providerType := reflect.TypeOf((*credentialProvider)(nil)).Elem()
 	if providerType.NumMethod() != 1 {

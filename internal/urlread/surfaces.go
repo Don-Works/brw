@@ -5,16 +5,13 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 
 	"golang.org/x/net/html"
 )
 
-// AgentSurfaces lists the machine-facing alternatives a site offers to its human
-// pages, gathered from the page's <head> and anchors, the response's Link
-// header, and the concurrent discovery probes (/llms.txt, the page's .md
-// variant, /.well-known/api-catalog, /.well-known/ai-catalog.json and
-// /.well-known/ucp).
+// AgentSurfaces lists the machine-facing alternatives a site offers to its human pages, gathered from the page's <head> and anchors, the response's Link header, and the concurrent discovery probes (/llms.txt, the page's .md variant, /.well-known/api-catalog, /.well-known/ai-catalog.json and /.well-known/ucp).
 type AgentSurfaces struct {
 	Markdown        []string    `json:"markdown,omitempty"`
 	LLMs            []string    `json:"llms,omitempty"`
@@ -24,11 +21,9 @@ type AgentSurfaces struct {
 	A2AAgentCard    string      `json:"a2a_agent_card,omitempty"`
 	UCP             string      `json:"ucp,omitempty"`
 	UCPProfile      *UCPProfile `json:"ucp_profile,omitempty"`
-	// DeprecatedAIPlugin is a legacy ChatGPT-plugin manifest; it is reported
-	// apart from api_descriptions because the format is retired.
+	// DeprecatedAIPlugin is a legacy ChatGPT-plugin manifest; it is reported apart from api_descriptions because the format is retired.
 	DeprecatedAIPlugin string `json:"deprecated_ai_plugin,omitempty"`
-	// LLMsTxt is "present", "absent" or "unknown" (the probe timed out, was
-	// refused by policy, or failed). Empty when no probe ran.
+	// LLMsTxt is "present", "absent" or "unknown" (the probe timed out, was refused by policy, or failed).
 	LLMsTxt    string `json:"llms_txt,omitempty"`
 	LLMsTxtURL string `json:"llms_txt_url,omitempty"`
 }
@@ -55,31 +50,23 @@ const (
 var (
 	mcpPathPattern     = regexp.MustCompile(`(?i)(^|/)(mcp|mcp/sse|sse)/?$`)
 	openAPIPathPattern = regexp.MustCompile(`(?i)(openapi\.(json|ya?ml)|swagger\.json)$`)
-	// documentPathPattern is a page for people: a link labelled "MCP" that
-	// points at one is an article about MCP, not an endpoint.
+
 	documentPathPattern = regexp.MustCompile(`(?i)\.(md|markdown|html?|txt|pdf)$`)
 )
 
-// surfaceLink is one hyperlink from any source, before classification.
 type surfaceLink struct {
 	href string
 	rels []string
 	typ  string
 	text string
-	// prose marks a link from a text body (llms.txt), where the path and the
-	// link text are the only signals.
+
 	prose bool
-	// anchor marks an HTML <a>, where only well-known paths are meaningful.
+
 	anchor bool
 }
 
 func (l surfaceLink) has(rel string) bool {
-	for _, r := range l.rels {
-		if r == rel {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(l.rels, rel)
 }
 
 func (s *AgentSurfaces) addLink(base *url.URL, l surfaceLink) {
@@ -133,22 +120,16 @@ func isOpenAPIType(typ string) bool {
 }
 
 func appendCapped(list []string, value string) []string {
-	if len(list) >= maxSurfaceLinks {
-		return list
+	if len(list) < maxSurfaceLinks && !slices.Contains(list, value) {
+		return append(list, value)
 	}
-	for _, existing := range list {
-		if existing == value {
-			return list
-		}
-	}
-	return append(list, value)
+	return list
 }
 
 func mediaTypeOf(contentType string) string {
 	return strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
 }
 
-// parseLinkHeader reads RFC 8288 Link header values: <uri>; rel="a b"; type="t".
 func parseLinkHeader(values []string) []surfaceLink {
 	var links []surfaceLink
 	for _, value := range values {
@@ -195,7 +176,6 @@ var (
 	bareURLPattern      = regexp.MustCompile(`https?://[^\s<>()\[\]"']+`)
 )
 
-// proseLinks reads markdown links and bare URLs out of a text body.
 func proseLinks(body []byte) []surfaceLink {
 	var links []surfaceLink
 	text := string(body)
@@ -209,7 +189,6 @@ func proseLinks(body []byte) []surfaceLink {
 	return links
 }
 
-// htmlSignals is everything one tokenizer pass over an HTML body collects.
 type htmlSignals struct {
 	title         string
 	surfaces      AgentSurfaces
@@ -326,7 +305,6 @@ func isChallenge(header http.Header, body []byte, title string) bool {
 	return false
 }
 
-// successHint classifies a 2xx HTML response whose prose is not the page.
 func successHint(finalURL *url.URL, sig htmlSignals, mainChars int) string {
 	if sig.passwordInput {
 		path := ""

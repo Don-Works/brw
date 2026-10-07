@@ -12,9 +12,6 @@ import (
 	"time"
 )
 
-// resolveWithin fails the test rather than hanging when a provider ignores its
-// deadline, so a regression reports in seconds instead of at the package
-// timeout.
 func resolveWithin(t *testing.T, registry *Registry, reference string, limit time.Duration) error {
 	t.Helper()
 	done := make(chan error, 1)
@@ -34,11 +31,6 @@ func resolveWithin(t *testing.T, registry *Registry, reference string, limit tim
 	}
 }
 
-// docs/plugins.md promises every provider call a deadline. exec.CommandContext
-// alone does not give one: it kills the child at the deadline but Wait still
-// blocks until every inherited writer closes the stdout pipe, so a provider
-// that backgrounds a grandchild and exits 0 holds the step open for as long as
-// the grandchild lives — and then reports its empty output as the answer.
 func TestExecProviderDeadlineSurvivesAGrandchildHoldingStdout(t *testing.T) {
 	shell := "/bin/sh"
 	if _, err := os.Stat(shell); err != nil {
@@ -67,11 +59,6 @@ func TestExecProviderDeadlineSurvivesAGrandchildHoldingStdout(t *testing.T) {
 	}
 }
 
-// The file kind has a deadline too, which is the only thing that makes the
-// doc's "every provider call" true. os.Stat and os.ReadFile take no context, so
-// a named pipe with no writer — or a wedged network mount — would otherwise
-// hold the recipe step open forever. This is also where timeout_ms on a file
-// provider stops being a setting that validates and does nothing.
 func TestFileProviderHonoursItsDeadlineOnAnUnreadableFile(t *testing.T) {
 	credentials := t.TempDir()
 	fifo := filepath.Join(credentials, "blocking")

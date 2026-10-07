@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestFetchExtractsBySourceType(t *testing.T) {
@@ -108,8 +109,6 @@ func TestFetchExtractsBySourceType(t *testing.T) {
 	}
 }
 
-// The read must never carry the user's session: that is the whole reason it is
-// safe to point at an arbitrary URL.
 func TestFetchSendsNoCookies(t *testing.T) {
 	var mu sync.Mutex
 	var sawCookie []string
@@ -189,9 +188,6 @@ func TestFetchRejectsNonHTTPSchemes(t *testing.T) {
 	}
 }
 
-// checkDialIP is what stops a URL read from being turned into a request against
-// cloud instance metadata. It runs on the RESOLVED address, so a hostname that
-// resolves into a blocked range is refused too.
 func TestCheckDialIPBlocksInfrastructureRanges(t *testing.T) {
 	tests := []struct {
 		ip      string
@@ -207,13 +203,11 @@ func TestCheckDialIPBlocksInfrastructureRanges(t *testing.T) {
 		{"198.18.0.1", true, "benchmarking range"},
 		{"240.0.0.1", true, "reserved"},
 		{"192.0.0.1", true, "IETF protocol assignments"},
-		// Allowed on purpose: brw is a local dev tool.
+
 		{"127.0.0.1", false, "loopback is a first-class local dev target"},
 		{"::1", false, "IPv6 loopback"},
 		{"93.184.216.34", false, "ordinary public address"},
-		// RFC1918 addresses are built rather than written as literals so the
-		// repository's hygiene scanner does not read a test table as a leaked
-		// internal address.
+
 		{privateIPv4(192, 168, 1, 10), false, "LAN host"},
 		{privateIPv4(10, 0, 0, 5), false, "private network"},
 		{privateIPv4(172, 16, 0, 9), false, "private network"},
@@ -232,8 +226,7 @@ func TestCheckDialIPBlocksInfrastructureRanges(t *testing.T) {
 }
 
 func TestFetchPagesLikeAnInTabRead(t *testing.T) {
-	// Each 10-char block is distinct, so two different windows cannot compare
-	// equal by accident the way a repeated pattern would.
+
 	var prose strings.Builder
 	for i := 0; i < 50; i++ {
 		fmt.Fprintf(&prose, "block%03d__", i)
@@ -278,7 +271,43 @@ func TestFetchReportsHTTPErrorStatus(t *testing.T) {
 	}
 }
 
-// privateIPv4 builds an RFC1918 address without spelling one out in source.
 func privateIPv4(a, b, c, d byte) string {
 	return net.IPv4(a, b, c, d).String()
+}
+
+func TestFetchClosesRequestAndDiscoveryConnections(t *testing.T) {
+	var live sync.Map
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/page" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprint(w, "# Fixture")
+	}))
+	srv.Config.ConnState = func(conn net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			live.Store(conn, true)
+		case http.StateClosed, http.StateHijacked:
+			live.Delete(conn)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+	if _, err := Fetch(context.Background(), Options{URL: srv.URL + "/page"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		count := 0
+		live.Range(func(any, any) bool { count++; return true })
+		if count == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("fetch retained %d idle sockets", count)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

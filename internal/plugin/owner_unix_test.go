@@ -10,9 +10,6 @@ import (
 	"testing"
 )
 
-// ownerInfo reports a chosen uid. Creating a file owned by another user needs
-// root, so the ownership half of the trust boundary is tested against the
-// stat the kernel would have returned.
 type ownerInfo struct {
 	fs.FileInfo
 	sys any
@@ -33,8 +30,7 @@ func TestRefuseForeignOwner(t *testing.T) {
 		"the daemon's own user": {sys: &syscall.Stat_t{Uid: uint32(mine)}},
 		"root":                  {sys: &syscall.Stat_t{Uid: uint32(root)}},
 		"another local user":    {sys: &syscall.Stat_t{Uid: uint32(foreign)}, wantErr: true},
-		// A platform that reports no owner leaves the mode as the only check,
-		// which is what owner_windows.go does.
+
 		"no owner reported": {sys: nil},
 	} {
 		t.Run(name, func(t *testing.T) {

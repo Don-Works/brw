@@ -10,8 +10,6 @@ import (
 	"testing"
 )
 
-// writeShellProgram writes a script that prints one line, chmodded after the
-// write because the process umask clears the bits these tests are about.
 func writeShellProgram(t *testing.T, path, output string, mode os.FileMode) string {
 	t.Helper()
 	if err := os.WriteFile(path, []byte("#!/bin/sh\necho "+output+"\n"), 0o700); err != nil {
@@ -42,11 +40,6 @@ func execManifestRoot(t *testing.T, program string) string {
 	return root
 }
 
-// A symlink is a second spelling of the program's location, and whoever can
-// write the directory holding it chooses what it points at. Checking only the
-// file the link resolves to therefore checks the wrong thing: a 0700 binary in
-// a 0700 directory, named through a world-writable directory, is still a
-// program another local user picks. Both ancestor chains have to be walked.
 func TestLoadRefusesAnExecProgramNamedThroughAWritableDirectory(t *testing.T) {
 	safe := t.TempDir()
 	program := writeShellProgram(t, filepath.Join(safe, "vaultcli"), "honest-fixture-value", 0o700)
@@ -67,9 +60,6 @@ func TestLoadRefusesAnExecProgramNamedThroughAWritableDirectory(t *testing.T) {
 	}
 }
 
-// The manifest an operator reviewed decides what runs, so what runs is the path
-// the loader resolved and checked — not the declared name resolved a second
-// time at exec, which is a second chance for the answer to change.
 func TestExecProviderRunsTheProgramTheLoaderChecked(t *testing.T) {
 	dir := t.TempDir()
 	honest := writeShellProgram(t, filepath.Join(dir, "honest"), "honest-fixture-value", 0o700)
@@ -102,9 +92,6 @@ func TestExecProviderRunsTheProgramTheLoaderChecked(t *testing.T) {
 	}
 }
 
-// brwd runs for weeks. A program that became group-writable at noon is chosen
-// by whoever made it so, and a check that ran only at startup would still be
-// reporting the answer it got at boot.
 func TestExecProviderRefusesAProgramThatBecameWritableAfterLoad(t *testing.T) {
 	dir := t.TempDir()
 	program := writeShellProgram(t, filepath.Join(dir, "vaultcli"), "honest-fixture-value", 0o700)

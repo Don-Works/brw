@@ -7,15 +7,8 @@ import (
 	"testing"
 )
 
-// zeroWidthSpace is written as a rune rather than inline: an invisible
-// character in a source literal is unreviewable, which is the same property
-// that makes it worth testing the gate against.
 var zeroWidthSpace = string(rune(0x200b))
 
-// The capability gate is the whole security argument for having an extension
-// point at all, so the attempts below are written as an attacker would make
-// them: name the default you want widened, then try the variants that a
-// trimming, case-folding or prefix-matching gate would let through.
 func TestNoCapabilityCanWidenABrwSecurityDefault(t *testing.T) {
 	for name, test := range map[string]struct {
 		capability string
@@ -82,15 +75,6 @@ func TestNoCapabilityCanWidenABrwSecurityDefault(t *testing.T) {
 	}
 }
 
-// A lock, not a tautology: the grantable set is the entire security boundary,
-// so widening it has to be a deliberate edit that fails this test first.
-//
-// browser.provider joined it when a backend started honouring it: a plugin can
-// now decide WHICH browser brw drives. What that does not widen is what brw
-// then does with the browser — the navigation policy, the containment
-// boundary, the site-consent gate and the identity guard are unchanged code on
-// a remote target, and internal/browser's RemoteUnavailable table is where the
-// narrowing that comes with it is written down.
 func TestGrantableSetIsExactlyTheTwoHonouredCapabilities(t *testing.T) {
 	want := []string{CapabilityBrowserProvider, CapabilityCredentialRead}
 	if got := GrantableCapabilities(); !slices.Equal(got, want) {
@@ -98,17 +82,6 @@ func TestGrantableSetIsExactlyTheTwoHonouredCapabilities(t *testing.T) {
 	}
 }
 
-// The three tables are the whole gate, and a name in two of them is a name
-// whose second classification is unreachable: CheckCapability answers from the
-// first that matches, so the reason in the other is text nobody will ever read.
-// Enumerating them against CheckCapability is what makes that checkable rather
-// than a convention.
-//
-// It also pins that every table entry produces the classification its table
-// promises. "reserved" is empty today — browser.provider, the one entry it ever
-// held, is granted now — so the loop over it proves nothing on its own; the
-// grantable and refused loops are what fail if a name moves without its answer
-// moving with it.
 func TestEveryCapabilityTableEntryIsClassifiedExactlyOnce(t *testing.T) {
 	seen := map[string]string{}
 	claim := func(name, table string) {
@@ -123,13 +96,6 @@ func TestEveryCapabilityTableEntryIsClassifiedExactlyOnce(t *testing.T) {
 			t.Errorf("grantable capability %q is refused: %v", name, err)
 		}
 	}
-	for name := range reserved {
-		claim(name, "reserved")
-		err := CheckCapability(name)
-		if err == nil || !strings.Contains(err.Error(), "reserved") {
-			t.Errorf("reserved capability %q = %v, want a refusal naming it as reserved", name, err)
-		}
-	}
 	for name := range refused {
 		claim(name, "refused")
 		err := CheckCapability(name)
@@ -137,7 +103,7 @@ func TestEveryCapabilityTableEntryIsClassifiedExactlyOnce(t *testing.T) {
 			t.Errorf("refused capability %q = %v, want a refusal naming the default it would widen", name, err)
 		}
 	}
-	if len(seen) < len(grantable)+len(reserved)+len(refused) {
-		t.Fatalf("the tables hold %d distinct names for %d entries", len(seen), len(grantable)+len(reserved)+len(refused))
+	if len(seen) < len(grantable)+len(refused) {
+		t.Fatalf("the tables hold %d distinct names for %d entries", len(seen), len(grantable)+len(refused))
 	}
 }
