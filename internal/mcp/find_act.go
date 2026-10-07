@@ -8,15 +8,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// parseFindAct reads the locate-and-act half of a brw_find call: the action to
-// run and the value to write. It reports whether an action was requested at all,
-// so an ordinary read-only find is untouched.
-//
-// The search half is rebuilt from the already-decoded FindOptions rather than
-// carried across, with one deliberate exception: limit is dropped. A caller who
-// passes limit:1 would otherwise hand the exactly-one-match rule a set of one
-// that the limit created, and the rule would confirm a uniqueness that is not
-// there. browser.FindAct fixes its own limit for the same reason.
 func parseFindAct(args json.RawMessage, opts snapshot.FindOptions) (browser.FindAct, bool, error) {
 	var req struct {
 		Action string `json:"action"`

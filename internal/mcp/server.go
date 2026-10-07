@@ -8,7 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,11 +31,6 @@ import (
 )
 
 // Version is the build version reported over MCP initialize (serverInfo.version).
-// It is injected at build time via -ldflags "-X .../internal/mcp.Version=<v>"
-// (see Taskfile.yml and scripts/package-*), so the version an agent sees always
-// matches the binary it is talking to instead of a hand-edited constant that
-// silently drifts from the released build. Defaults to "dev" for a plain
-// `go build` / `go test`.
 var Version = "dev"
 
 type Server struct {
@@ -44,78 +40,48 @@ type Server struct {
 	skew         versionSkew
 	artifacts    artifact.API
 	recipes      recipe.API
-	toolProfile  string // all, core, minimal, or progressive auto
+	toolProfile  string
 	navPolicy    *navpolicy.Policy
 	idleExit     time.Duration
-	// activity reports work to an owner outside this server. Nil by default;
-	// see SetActivityHook.
+
 	activity  func() func()
 	usage     *usagelog.Recorder
 	sessionID string
 	identity  brwidentity.Identity
 	console   consoleBuffer
 	unlocked  unlockedTools
-	// consent gates tools behind a persistent per-origin grant. Nil (the
-	// default) leaves every tool ungated: site consent is opt-in.
+
 	consent *siteconsent.Guard
-	// refLabels remembers the accessible name brw last reported for each ref, so
-	// a click addressed by ref can still be classified for the confirmation gate.
+
 	refLabels refLabelStore
-	// diffs holds per-tab brw_diff baselines. Zero value is usable.
+
 	diffs diffStore
-	// baselines is the persistent regression-baseline set behind brw_baseline.
-	// Nil unless the operator configured a root; brw_baseline then refuses by
-	// name rather than gating against a store that forgets on restart.
+
 	baselines *baseline.Store
-	// recipeBaselines is the private provider's baseline side, when the
-	// configured provider implements it. A baseline for a recipe that provider
-	// owns goes there instead of the local root: the capture is of a page the
-	// private recipe reached, and the provider already holds the recipe.
+
 	recipeBaselines recipe.BaselineStore
-	// baselineRouter answers where a capture belongs. It is recipeBaselines on a
-	// browser-host daemon, and the upstream hop on a proxying one, which can ask
-	// the question without being able to store the answer.
+
 	baselineRouter recipe.BaselineRouter
 
-	// notify pushes a JSON-RPC notification to the client. Serve installs it;
-	// it is nil before Serve runs and on transports that cannot push.
 	notifyMu sync.Mutex
 	notify   func(method string, params any)
 }
 
-// SetIdentity records which workspace/profile/browser this server drives, so the
-// brw_identity tool can answer "which browser am I controlling?" over MCP. An
-// agent enumerates the brw_* namespaces (one per browser profile) and calls
-// brw_identity on each to map a namespace to a concrete profile instead of
-// guessing from the namespace label. Empty (the default) means the daemon was
-// launched without a profile policy; brw_identity still answers, just sparsely.
+// SetIdentity records which workspace/profile/browser this server drives, so the brw_identity tool can answer "which browser am I controlling?" over MCP.
 func (s *Server) SetIdentity(identity brwidentity.Identity) {
 	s.identity = identity
 }
 
 // SetIdleExit makes Serve return cleanly after no request has arrived for d.
-// Zero (the default) disables it. Intended for the stateless --upstream-http
-// proxy mode where the process is disposable and a supervisor (or the next
-// session) respawns it on demand: a parent that abandons the process without
-// closing its stdin would otherwise pin it alive forever.
 func (s *Server) SetIdleExit(d time.Duration) {
 	s.idleExit = d
 }
 
-// SetActivityHook reports each request this server handles to its owner. The
-// hook is called when a request starts and the function it returns when that
-// request finishes.
-//
-// The owner is the daemon's HTTP server, whose --idle-exit watcher sees only
-// the HTTP mux. A daemon in --mcp mode keeps that listener and serves an agent
-// over stdio, so without this it counted a live MCP session as silence and
-// exited, closing the browser under the agent that was driving it.
+// SetActivityHook reports each request this server handles to its owner.
 func (s *Server) SetActivityHook(hook func() func()) {
 	s.activity = hook
 }
 
-// noteActivity brackets one piece of work for the activity hook. It always
-// returns a callable, so the call sites need no nil check.
 func (s *Server) noteActivity() func() {
 	if s.activity == nil {
 		return func() {}
@@ -126,9 +92,7 @@ func (s *Server) noteActivity() func() {
 	return func() {}
 }
 
-// SetUsageRecorder installs the metadata-only operational ledger. Tool
-// arguments and result content are never passed to it; errors are reduced to a
-// stable category and one-way fingerprint.
+// SetUsageRecorder installs the metadata-only operational ledger.
 func (s *Server) SetUsageRecorder(recorder *usagelog.Recorder) {
 	s.usage = recorder
 }
@@ -137,9 +101,6 @@ func (s *Server) SetArtifactAPI(api artifact.API) { s.artifacts = api }
 
 func (s *Server) SetRecipeAPI(api recipe.API) { s.recipes = api }
 
-// artifactService and recipeService prefer capabilities implemented by the
-// controller itself. In --upstream-http mode that controller is the proxy, so
-// this keeps storage and private-provider access on the long-lived browser host.
 func (s *Server) artifactService() artifact.API {
 	if api, ok := s.manager.(artifact.API); ok {
 		return api
@@ -154,22 +115,13 @@ func (s *Server) recipeService() recipe.API {
 	return s.recipes
 }
 
-// SetNavigationPolicy installs an opt-in allow/deny guardrail enforced on
-// URL-opening tools (brw_open, brw_open_incognito) and brw_replay_request. A nil
-// or empty policy is a no-op.
+// SetNavigationPolicy installs an opt-in allow/deny guardrail enforced on URL-opening tools (brw_open, brw_open_incognito) and brw_replay_request.
 func (s *Server) SetNavigationPolicy(p *navpolicy.Policy) {
 	s.navPolicy = p
 }
 
-const (
-	defaultSnapshotMode  = "frontier"
-	defaultSnapshotLimit = 40
-	defaultFindLimit     = 20
-)
+const defaultFindLimit = 20
 
-// coreToolNames is the lean, common-flow tool surface. It hides the long tail
-// while keeping the verbs an agent needs for common
-// read/click/type/select/navigate/scroll/drag/upload/hover flows.
 var coreToolNames = map[string]bool{
 	"brw_identity":       true,
 	"brw_open":           true,
@@ -195,23 +147,12 @@ var coreToolNames = map[string]bool{
 	"brw_observe":        true,
 	"brw_screenshot":     true,
 	"brw_emulate_device": true,
-	// The cheapest read brw has; an agent should reach for it before opening a tab.
+
 	"brw_read_url": true,
-	// A dialog can stop a flow dead, and the recovery is to pre-arm the answer
-	// and retry. That has to be reachable without first discovering it.
+
 	"brw_dialog": true,
 }
 
-// minimalToolNames is the smallest surface that still completes ordinary web
-// work: find a page, see its controls, act on them, confirm the result. Every
-// tool omitted here remains callable — the profile only narrows what tools/list
-// advertises, and the catalogue is re-sent on every request, so a narrower
-// profile is a per-turn saving for the whole session.
-//
-// brw_batch earns its place despite the size of its schema: it collapses a
-// multi-step flow into one round trip, which saves more than its definition
-// costs. brw_observe earns its place because it is what an agent reads instead
-// of re-snapshotting.
 var minimalToolNames = map[string]bool{
 	"brw_open":        true,
 	"brw_navigate_to": true,
@@ -225,30 +166,20 @@ var minimalToolNames = map[string]bool{
 	"brw_wait_for":    true,
 	"brw_observe":     true,
 	"brw_batch":       true,
-	// Reading a public page is common enough, and cheap enough without a tab,
-	// that leaving it out of the minimal surface costs more than it saves.
+
 	"brw_read_url": true,
 }
 
-// toolProfiles maps a profile name to its allowed set. A nil set means every
-// tool is advertised.
 var toolProfiles = map[string]map[string]bool{
 	"all":     nil,
 	"core":    coreToolNames,
 	"minimal": minimalToolNames,
-	// auto starts from the minimal set and grows as brw_tools discloses more.
+
 	autoProfile: minimalToolNames,
 }
 
 // ToolProfileNames lists the selectable profiles, for CLI help and validation.
-func ToolProfileNames() []string {
-	names := make([]string, 0, len(toolProfiles))
-	for name := range toolProfiles {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
+func ToolProfileNames() []string { return slices.Sorted(maps.Keys(toolProfiles)) }
 
 // ValidToolProfile reports whether name selects a known profile.
 func ValidToolProfile(name string) bool {
@@ -260,9 +191,6 @@ func New(manager browser.Controller) *Server {
 	return &Server{manager: manager, toolProfile: "all", sessionID: usagelog.NewID()}
 }
 
-// checkNavPolicy enforces the optional navigation guardrail. Returns nil when no
-// policy is set or the URL is permitted. A relative replay URL (no host) passes;
-// the policy only gates absolute network destinations.
 func (s *Server) checkNavPolicy(rawURL string) error {
 	if s.navPolicy.Empty() {
 		return nil
@@ -270,16 +198,11 @@ func (s *Server) checkNavPolicy(rawURL string) error {
 	return s.navPolicy.Check(rawURL)
 }
 
-// prepareNavigation canonicalizes the exact URL that will be handed to the
-// controller, then applies the navigation policy to that same value.
 func (s *Server) prepareNavigation(rawURL string) (string, error) {
 	return s.navPolicy.CheckNavigation(rawURL)
 }
 
-// NewWithToolProfile builds a server that advertises the named all, core,
-// minimal, or auto tool profile. Auto starts minimal and grows through
-// brw_tools discovery. All tools remain callable regardless of profile; the
-// profile only narrows what tools/list advertises.
+// NewWithToolProfile builds a server that advertises the named all, core, minimal, or auto tool profile.
 func NewWithToolProfile(manager browser.Controller, profile string) *Server {
 	if profile == "" {
 		profile = "all"
@@ -287,52 +210,11 @@ func NewWithToolProfile(manager browser.Controller, profile string) *Server {
 	return &Server{manager: manager, toolProfile: profile, sessionID: usagelog.NewID()}
 }
 
-// environmentController resolves the optional page-environment capability. A
-// transport that cannot hold DevTools session overrides fails the assertion and
-// the caller answers with browser.ErrEnvironmentUnsupported, which names the
-// transport and the reason rather than saying only "unsupported".
 func (s *Server) environmentController() (browser.EnvironmentController, bool) {
 	env, ok := s.manager.(browser.EnvironmentController)
 	return env, ok
 }
 
-// initScriptController resolves the optional init-script capability. A lane
-// without it answers with browser.ErrInitScriptUnsupported, which names the
-// reason rather than saying only "unsupported".
-func (s *Server) initScriptController() (browser.InitScriptController, bool) {
-	ctl, ok := s.manager.(browser.InitScriptController)
-	return ctl, ok
-}
-
-// touchController resolves the optional touch-gesture capability.
-func (s *Server) touchController() (browser.TouchController, bool) {
-	ctl, ok := s.manager.(browser.TouchController)
-	return ctl, ok
-}
-
-// profileController resolves the optional performance-trace / CPU-profiler
-// capability.
-func (s *Server) profileController() (browser.ProfilerController, bool) {
-	ctl, ok := s.manager.(browser.ProfilerController)
-	return ctl, ok
-}
-
-// reactController resolves the optional React-introspection capability.
-func (s *Server) reactController() (browser.ReactController, bool) {
-	ctl, ok := s.manager.(browser.ReactController)
-	return ctl, ok
-}
-
-// checkController resolves the optional checkbox/radio capability.
-func (s *Server) checkController() (browser.CheckController, bool) {
-	ctl, ok := s.manager.(browser.CheckController)
-	return ctl, ok
-}
-
-// supportedOnTransport reports whether a tool can succeed on this server's
-// transport. An unset Transport (a daemon that never recorded its identity)
-// advertises everything: hiding a tool because the transport is merely unknown
-// is a worse failure than advertising one that errors.
 func (s *Server) supportedOnTransport(name string) bool {
 	if s.identity.Transport == "" {
 		return true
@@ -340,7 +222,6 @@ func (s *Server) supportedOnTransport(name string) bool {
 	return !unsupportedOn(name, s.identity.Transport)
 }
 
-// dropUnsupported narrows a full catalogue to what this transport can run.
 func (s *Server) dropUnsupported(all []map[string]any) []map[string]any {
 	if s.identity.Transport == "" {
 		return all
@@ -355,21 +236,15 @@ func (s *Server) dropUnsupported(all []map[string]any) []map[string]any {
 	return kept
 }
 
-// advertisedTools returns tools/list narrowed to the active profile. Unknown
-// profiles fall back to the complete surface for compatibility.
 func (s *Server) advertisedTools() []map[string]any {
 	all := tools()
 	allowed, known := toolProfiles[s.toolProfile]
-	// An unknown profile advertises everything rather than nothing: a typo in a
-	// client config should degrade to the full surface, never to a mute server.
+
 	if !known || allowed == nil {
 		return s.dropUnsupported(all)
 	}
 	auto := s.toolProfile == autoProfile
-	// Snapshot the unlocked set once. Taking the lock per tool let an unlock
-	// landing mid-iteration produce a catalogue that omitted a tool unlocked
-	// before the scan reached it while including one unlocked after — a
-	// self-inconsistent list, and one the client has no reason to refetch.
+
 	unlocked := map[string]bool{}
 	if auto {
 		unlocked = s.unlocked.snapshot()
@@ -387,23 +262,16 @@ func (s *Server) advertisedTools() []map[string]any {
 	return filtered
 }
 
-// supportsListChanged reports whether this server can grow its catalogue mid
-// session. Only auto mode does, and advertising the capability otherwise would
-// promise a notification that never comes.
 func (s *Server) supportsListChanged() bool {
 	return s.toolProfile == autoProfile
 }
 
-// setNotifier installs the push channel Serve owns.
 func (s *Server) setNotifier(fn func(method string, params any)) {
 	s.notifyMu.Lock()
 	s.notify = fn
 	s.notifyMu.Unlock()
 }
 
-// announceToolsChanged tells the client its catalogue is stale. Best effort: a
-// client that never refetches still works, because unadvertised tools remain
-// callable.
 func (s *Server) announceToolsChanged() {
 	s.notifyMu.Lock()
 	fn := s.notify
@@ -420,8 +288,6 @@ type request struct {
 	Params  json.RawMessage `json:"params,omitempty"`
 }
 
-// notification is a JSON-RPC message with no id, which the client must not
-// answer. Params is omitted when nil so a bare notification stays bare.
 type notification struct {
 	JSONRPC string `json:"jsonrpc"`
 	Method  string `json:"method"`
@@ -447,23 +313,15 @@ type toolContent struct {
 	MIMEType string `json:"mimeType,omitempty"`
 }
 
-// inbound carries one stdin message (or terminal read error) from the reader
-// goroutine to the Serve loop, along with the stdio framing mode in effect
-// when it was read.
 type inbound struct {
 	body []byte
 	mode stdioMode
 	err  error
 }
 
-// ErrIdleExit is returned by Serve when the idle-exit deadline (SetIdleExit)
-// elapses with no incoming request. Callers should treat it as a clean,
-// intentional shutdown, not a failure.
+// ErrIdleExit is returned by Serve when the idle-exit deadline (SetIdleExit) elapses with no incoming request.
 var ErrIdleExit = errors.New("mcp: idle-exit deadline reached with no requests")
 
-// MCP arguments are commands, selectors, and bounded data windows—not a bulk
-// transfer channel. Cap both line and Content-Length framing before allocation;
-// large browser data belongs in the artifact store.
 const maxMCPMessageBytes = 8 << 20
 
 func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
@@ -474,14 +332,6 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		workers.Wait()
 	}()
 
-	// Stdin is read on its own goroutine so the loop can react to ctx
-	// cancellation (SIGTERM/SIGINT, parent death) while a read is blocked.
-	// Before this, a supervisor's polite SIGTERM was swallowed: NotifyContext
-	// cancelled ctx, but Serve sat in a blocking read forever and the process
-	// leaked — one zombie per abandoned session. The goroutine reads at most
-	// one message ahead (unbuffered channel). Requests are dispatched concurrently
-	// after framing so a brw_cancel (or MCP cancellation notification) arriving on
-	// this same stdio stream can interrupt a long plan instead of waiting behind it.
 	msgs := make(chan inbound)
 	go func() {
 		reader := bufio.NewReader(in)
@@ -502,9 +352,6 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		}
 	}()
 
-	// Multiple request goroutines may finish out of order (legal JSON-RPC), but a
-	// frame itself must remain atomic. This lock prevents interleaved JSON or
-	// Content-Length headers on the shared writer.
 	var writeMu sync.Mutex
 	write := func(mode stdioMode, value any) error {
 		writeMu.Lock()
@@ -512,10 +359,6 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		return writeMessage(out, mode, value)
 	}
 
-	// Notifications are written on the same framed stream as responses, so they
-	// have to follow whatever framing the client established. Track the mode of
-	// the last message read; before the first one, line framing is the safe
-	// default because it is what a bare-JSON client sends.
 	var modeMu sync.Mutex
 	notifyMode := stdioModeLine
 	s.setNotifier(func(method string, params any) {
@@ -534,9 +377,6 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	type completion struct{ err error }
 	completed := make(chan completion)
 
-	// Idle-exit timer: fires only when enabled AND no message has arrived for
-	// s.idleExit. The deadline check re-arms on wakeup so a fire queued while a
-	// request was being handled cannot cause a premature exit.
 	var idleTimer *time.Timer
 	var idleC <-chan time.Time
 	lastActivity := time.Now()
@@ -577,9 +417,7 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 				idleTimer.Reset(s.idleExit)
 				continue
 			}
-			// The tick may have been queued while a request was being handled
-			// (lastActivity moved since the timer was armed) — re-arm for the
-			// remainder instead of exiting under an active client.
+
 			if remaining := s.idleExit - time.Since(lastActivity); remaining > 0 {
 				idleTimer.Reset(remaining)
 				continue
@@ -612,8 +450,6 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			continue
 		}
 
-		// Notifications have no response. MCP's cancellation notification targets
-		// the JSON-RPC request id, so cancel its derived context immediately.
 		if len(req.ID) == 0 {
 			if key := cancelledRequestKey(req); key != "" {
 				inflightMu.Lock()
@@ -790,9 +626,7 @@ func writeMessage(w io.Writer, mode stdioMode, value any) error {
 func (s *Server) handle(ctx context.Context, method string, params json.RawMessage) (any, *rpcError) {
 	switch method {
 	case "initialize":
-		// Forward the MCP client's display name to the shared daemon (when the
-		// manager is the HTTP proxy), where it titles this session's per-agent
-		// Chrome tab group. Best-effort identity garnish — never fails initialize.
+
 		var init struct {
 			ClientInfo struct {
 				Name string `json:"name"`
@@ -839,20 +673,10 @@ func (s *Server) handle(ctx context.Context, method string, params json.RawMessa
 	}
 }
 
-// activeTabResolver is the optional capability a Controller may implement to
-// resolve the genuinely focused tab once per top-level tool call. Only the
-// extension Bridge implements it (its per-call active-tab resolution is the
-// multiplier we are collapsing); the direct-CDP Manager and the HTTP proxy do
-// not, so they are left entirely unchanged.
 type activeTabResolver interface {
 	ResolveActiveTabID(context.Context) string
 }
 
-// tabAgnosticTools lists tools that must NOT trigger a one-shot active-tab
-// resolution: tab-management verbs (which manage focus themselves) and the
-// batch/plan runners (which resolve once internally and re-pin per step after a
-// focus_tab/open). list_tabs in particular must stay free of the extra round
-// trip the task brief calls out.
 var tabAgnosticTools = map[string]bool{
 	"brw_approval_status": true,
 	"brw_approval_resume": true,
@@ -880,16 +704,10 @@ var tabAgnosticTools = map[string]bool{
 	"brw_artifact_search": true,
 	"brw_artifact_delete": true,
 	"brw_recipe_search":   true,
-	// brw_state works at the BROWSER CONTEXT level (Storage.getCookies with a
-	// browserContextId), so resolving an active tab for it buys a round trip
-	// and changes nothing about what it reads.
+
 	"brw_state": true,
 }
 
-// pinActiveTabForTool resolves the active tab once (when the controller supports
-// it and the tool acts on the active tab) and pins it into the context as an
-// implicit/server-selected tab. A no-op when the controller does not implement
-// activeTabResolver, the tool is tab-management/batch, or resolution fails.
 func pinActiveTabForTool(ctx context.Context, manager browser.Controller, name string) context.Context {
 	if tabAgnosticTools[name] {
 		return ctx
@@ -908,7 +726,6 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	name = canonicalToolName(name)
 	defer func() { result = withSemanticFailure(name, result) }()
 
-	// Extract optional tab_id from any tool call and inject into context
 	var tabProbe struct {
 		TabID string `json:"tab_id"`
 	}
@@ -918,26 +735,17 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	if tabProbe.TabID != "" {
 		ctx = browser.WithTabID(ctx, tabProbe.TabID)
 	} else {
-		// No explicit tab_id: for tools that act on the active tab, resolve it
-		// ONCE here and pin it into the context so every downstream page call
-		// short-circuits instead of re-resolving the active tab per sub-call
-		// (the extension bridge otherwise issues get_active_tab_id 3-11x per
-		// logical tool call). Tab-management tools and the batch/plan runners are
-		// excluded: they manage focus themselves or pin internally per step.
+
 		ctx = pinActiveTabForTool(ctx, s.manager, name)
 	}
-	// Site consent runs before the switch, so a refused call dispatches nothing.
-	// It is a no-op unless a consent store was configured.
+
 	consentErr := s.enforceSiteConsent(ctx, name, args)
 	var approvalErr error
 	ctx, args, approvalErr = s.checkApproval(ctx, name, args, consentErr)
 	if approvalErr != nil {
 		return toolError(approvalErr), nil
 	}
-	// The checks the dispatch-time gate cannot make: a step lands where an
-	// earlier step left the tab, and a daemon-side fetch lands where a redirect
-	// sends it. Both are decided while the call runs, against the origin it
-	// actually reaches.
+
 	ctx = s.withConsentHooks(ctx, name, args)
 	switch name {
 	case "brw_approval_status":
@@ -961,18 +769,13 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err != nil {
 			return nil, invalid(err)
 		}
-		// Tell the client its catalogue moved, but only when it actually did:
-		// a notification per search would churn a client that refetches on it.
+
 		if result.Unlocked > 0 && s.supportsListChanged() {
 			s.announceToolsChanged()
 		}
 		return toolJSON(result, nil)
 	case "brw_identity":
-		// Process-level config, deliberately independent of the browser: it
-		// answers even when no bridge is connected or the browser has zero
-		// windows, because its whole job is to tell an agent which profile this
-		// namespace drives before it touches a tab. tabAgnosticTools keeps it
-		// off the active-tab resolution path so it never blocks on the bridge.
+
 		payload := map[string]any{
 			"identity":  s.identity,
 			"version":   Version,
@@ -981,8 +784,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		s.identityVersions(ctx, payload)
 		return toolJSON(payload, nil)
 	case skillToolName:
-		// Served from the binary, never from disk: the whole point is that the
-		// manual and the tool surface it describes come from one build.
+
 		var req struct {
 			Document string `json:"document"`
 		}
@@ -1036,7 +838,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		return toolOK(s.manager.CloseContext(ctx, contextIDArg(req.BrowserContextID, req.LegacyBrowserContextID)))
+		return toolOK(s.manager.CloseContext(ctx, preferredID(req.BrowserContextID, req.LegacyBrowserContextID)))
 	case "brw_list_tabs":
 		return s.listTabs(ctx, args)
 	case "brw_list_tab_groups":
@@ -1049,7 +851,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		return toolOK(s.manager.FocusTab(ctx, tabIDArg(req.TabID, req.ID)))
+		return toolOK(s.manager.FocusTab(ctx, preferredID(req.TabID, req.ID)))
 	case "brw_close_tab":
 		var req struct {
 			ID    string `json:"id"`
@@ -1058,7 +860,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		return toolOK(s.manager.CloseTab(ctx, tabIDArg(req.TabID, req.ID)))
+		return toolOK(s.manager.CloseTab(ctx, preferredID(req.TabID, req.ID)))
 	case "brw_emulate_device":
 		var req browser.DeviceEmulationOptions
 		if err := unmarshalArgs(args, &req); err != nil {
@@ -1106,7 +908,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		}
 		return toolJSON(env.SetLocale(ctx, req))
 	case "brw_init_script":
-		ctl, ok := s.initScriptController()
+		ctl, ok := s.manager.(browser.InitScriptController)
 		if !ok {
 			return toolError(browser.ErrInitScriptUnsupported), nil
 		}
@@ -1116,7 +918,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		}
 		return toolJSON(ctl.InitScript(ctx, req))
 	case "brw_touch":
-		ctl, ok := s.touchController()
+		ctl, ok := s.manager.(browser.TouchController)
 		if !ok {
 			return toolError(browser.ErrTouchUnsupported), nil
 		}
@@ -1126,7 +928,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		}
 		return toolJSON(ctl.Touch(ctx, req))
 	case "brw_profile":
-		ctl, ok := s.profileController()
+		ctl, ok := s.manager.(browser.ProfilerController)
 		if !ok {
 			return toolError(browser.ErrProfileUnsupported), nil
 		}
@@ -1141,7 +943,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		stored := artifact.AttachPerformanceReport(ctx, s.artifacts, result, time.Duration(req.TTLSeconds)*time.Second)
 		return toolJSON(stored, nil)
 	case "brw_react":
-		ctl, ok := s.reactController()
+		ctl, ok := s.manager.(browser.ReactController)
 		if !ok {
 			return toolError(errors.New("react introspection is not available on this transport")), nil
 		}
@@ -1151,7 +953,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		}
 		return toolJSON(ctl.React(ctx, req))
 	case "brw_check":
-		ctl, ok := s.checkController()
+		ctl, ok := s.manager.(browser.CheckController)
 		if !ok {
 			return toolError(errors.New("setting a checkbox is not available on this transport")), nil
 		}
@@ -1186,16 +988,11 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return toolError(browser.ErrEnvironmentUnsupported), nil
 		}
 		var req browser.CredentialsOptions
-		// Strict like every other tool — a typo in "password" must be an argument
-		// error, not an empty password and a puzzling "the server never asked".
-		// The decoder's own message quotes the offending JSON, which here is the
-		// credential, so only this constant reaches the caller.
+
 		if err := unmarshalStrictArgs(args, &req); err != nil {
 			return nil, invalid(errors.New("arguments are not valid JSON for this tool, or carry a field this tool does not define; check the names against the schema"))
 		}
-		// Marked sensitive so the replayable trace records that a navigation
-		// happened without recording the URL it went to: a credentialed URL is
-		// the kind that carries a token in its query string.
+
 		return toolJSON(env.Authenticate(browser.WithSensitiveAction(ctx), req))
 	case "brw_set_download_path":
 		env, ok := s.environmentController()
@@ -1236,14 +1033,9 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			setReadObservation(ctx, read)
 			return toolJSON(read, nil)
 		}
-		// An unmatched section is an argument error, not a silently empty read:
-		// the agent asked for a part of the page that is not there, and needs to
-		// know which parts are.
+
 		if req.Section != "" {
-			// Distinguish "that section is not on this page" from "this browser
-			// backend cannot address sections at all". An older upstream daemon
-			// in proxy mode returns headings without offsets; treating that as a
-			// miss would send the agent hunting for a name that is right there.
+
 			if !readability.SectionsAddressable(read.Headings) {
 				return nil, invalid(fmt.Errorf(
 					"section addressing is unavailable on this backend (the page read carried no heading offsets); page with offset/max_chars instead, or update the brw daemon this session proxies to"))
@@ -1263,7 +1055,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		req = normalizeMCPSnapshotOptions(req)
+		req = snapshot.NormalizeOptions(req)
 		if observation := usagelog.ObservationFromContext(ctx); observation != nil {
 			observation.SnapshotMode = req.Mode
 			observation.ElementLimit = usagelog.Count(int64(req.Limit))
@@ -1293,10 +1085,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if obsErr != nil {
 			return nil, invalid(obsErr)
 		}
-		// An action turns the search into a locate-and-act: one call instead of
-		// find-then-click, with the exactly-one-match rule enforced in the
-		// daemon. The search options are rebuilt from the request, so a caller
-		// cannot pass limit:1 and have the rule confirm a uniqueness it created.
+
 		findAct, hasAction, actErr := parseFindAct(args, req)
 		if actErr != nil {
 			return nil, invalid(actErr)
@@ -1304,13 +1093,13 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if hasAction {
 			return obs.findAct(browser.RunFindAct(ctx, s.manager, findAct))
 		}
-		// Without an action the match list is the whole payload, so a level
-		// that trims observations has nothing to apply. Refuse it by name
-		// rather than accept it and ignore it.
+
 		if err := obs.requireFindAction(); err != nil {
 			return nil, invalid(err)
 		}
-		req = normalizeMCPFindOptions(req)
+		if req.Limit <= 0 {
+			req.Limit = defaultFindLimit
+		}
 		found, err := s.manager.Find(ctx, req)
 		if err == nil {
 			s.refLabels.record(browser.TabIDFromContext(ctx), found.Elements)
@@ -1487,8 +1276,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		// Accept Playwright-style {value:"…"} as an alias for text so agents
-		// don't silently clear the field (empty text + replace:true).
+
 		req.Text = req.EffectiveText()
 		var raw map[string]json.RawMessage
 		_ = json.Unmarshal(args, &raw)
@@ -1515,9 +1303,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		// The url source makes the daemon fetch an arbitrary http(s) target on
-		// the browser host (SSRF reach). Gate it with the same navigation policy
-		// as brw_open so the allowlist/blocklist can't be sidestepped via upload.
+
 		if req.URL != "" {
 			if err := s.checkNavPolicy(req.URL); err != nil {
 				return toolError(err), nil
@@ -1621,8 +1407,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		// A ref or region implies an annotated (Set-of-Marks) crop even if annotate
-		// was omitted — the whole point of the crop is the ref legend.
+
 		if req.Annotate || strings.TrimSpace(req.Ref) != "" || req.Region != nil {
 			aopts := browser.AnnotatedScreenshotOptions{Mode: "frontier", Ref: req.Ref}
 			if req.Region != nil {
@@ -1667,10 +1452,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return nil, invalid(err)
 		}
 		timeout := time.Duration(req.TimeoutMS) * time.Millisecond
-		// Report which source answered the wait when the transport can say. A
-		// caller that sees resolved_by:"poll" knows the condition it picked has
-		// no subscription behind it on this transport and costs a round trip per
-		// check; an upstream controller too old to report degrades to {ok:true}.
+
 		if observer, ok := s.manager.(browser.WaitObserver); ok {
 			return toolJSON(observer.WaitForOutcome(ctx, req.Condition, timeout))
 		}
@@ -1684,25 +1466,13 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalStrictArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		// Before this surface's own pre-checks, for the same reason both
-		// backends ask before their action switch: the refusal belongs to the
-		// behaviour and to nothing else. Asked only in the backends, the replay
-		// shape never got there — the transport pre-checks below answered first,
-		// so behaviour=redirect came back as "use a direct-CDP profile" for a
-		// behaviour no profile has, or as an artifact-store error.
+
 		if err := browser.CheckRouteBehaviourSupported(req.Behaviour); err != nil {
 			return toolError(err), nil
 		}
-		// The HAR is read here rather than inside a transport: the recording
-		// lives in the artifact store this surface owns, and decoding it here is
-		// what keeps every transport free of a dependency on artifact storage.
-		// (--upstream-http is out of scope either way: internal/httpclient has no
-		// Route method, so brw_route on a proxying daemon fails the assertion
-		// above and never reaches this.)
+
 		if strings.EqualFold(strings.TrimSpace(req.Action), "replay") {
-			// Asked before the read, not after: a transport that cannot replay
-			// should answer with its own named capability error rather than with
-			// whatever a 32 MiB artifact read happened to produce.
+
 			if replayer, canReplay := router.(browser.RouteReplayer); canReplay {
 				if err := replayer.CheckRouteReplay(); err != nil {
 					return toolError(err), nil
@@ -1724,15 +1494,12 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalStrictArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		// Mode "all" rather than the default scored frontier: a diff must see the
-		// paragraph a click appended, not only the actionable controls.
+
 		snap, err := s.manager.Snapshot(ctx, snapshot.SnapshotOptions{Mode: "all", ViewportOnly: false})
 		if err != nil {
 			return toolError(err), nil
 		}
-		// A cheap prose fingerprint alongside the elements, so "changed:false"
-		// means the page really did not change. A failure here degrades to an
-		// element-only diff rather than failing the call.
+
 		pageText := ""
 		if value, textErr := s.manager.Evaluate(ctx, textFingerprintExpression); textErr == nil {
 			if fingerprint, isString := value.(string); isString {
@@ -1761,9 +1528,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			return toolError(fmt.Errorf("unknown diff action %q: use mark or compare", req.Action)), nil
 		}
 	case "brw_get":
-		// TabID is declared on GetRequest so strict unmarshalling accepts it;
-		// callTool has already put it on the context, which is what actually
-		// targets the tab.
+
 		var req snapshot.GetRequest
 		if err := unmarshalStrictArgs(args, &req); err != nil {
 			return nil, invalid(err)
@@ -1771,10 +1536,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := req.Validate(); err != nil {
 			return toolError(err), nil
 		}
-		// brw_get takes a ref but reaches the transport through Evaluate, which is
-		// ref-free as far as the Controller classification is concerned — so the
-		// guard the other ref-taking verbs get has to be applied here, at the one
-		// place that knows this argument is a ref.
+
 		if err := browser.GuardCrossOriginRefs("get", browser.GenericCrossOriginRemedy, req.Target); err != nil {
 			return toolError(err), nil
 		}
@@ -1805,8 +1567,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			Ref      string `json:"ref"`
 			Snapshot bool   `json:"snapshot"`
 			TabID    string `json:"tab_id"`
-			// Declared so strict decoding accepts it; the level itself is read by
-			// observerFromArgs, which every action tool shares.
+			// Declared so strict decoding accepts it; the level itself is read by observerFromArgs, which every action tool shares.
 			Observe string `json:"observe"`
 		}
 		if err := unmarshalStrictArgs(args, &req); err != nil {
@@ -1856,9 +1617,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalStrictArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		// Defense in depth: the controller re-checks the target resolved against
-		// the live document, but an absolute off-policy URL is refused here
-		// before it reaches the browser at all.
+
 		if err := s.checkNavPolicy(req.URL); err != nil {
 			return toolError(err), nil
 		}
@@ -1869,8 +1628,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 			Action string `json:"action"`
 			Key    string `json:"key"`
 			Value  string `json:"value"`
-			// Declared so strict unmarshalling accepts it; callTool has already
-			// put it on the context, which is what actually targets the tab.
+			// Declared so strict unmarshalling accepts it; callTool has already put it on the context, which is what actually targets the tab.
 			TabID string `json:"tab_id"`
 		}
 		if err := unmarshalStrictArgs(args, &req); err != nil {
@@ -1889,11 +1647,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalStrictArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		// The no-browser read is a network destination like any other, so it is
-		// gated by exactly the same navigation policy AND the same site consent
-		// as a tab navigation - on the URL the call named and on every redirect
-		// hop after it, which is where a grant for one origin was reading
-		// another's pages.
+
 		req.PolicyCheck = s.CheckFetchDestination
 		if strings.TrimSpace(req.UserAgent) == "" {
 			req.UserAgent = urlread.UserAgentFor(Version)
@@ -2004,10 +1758,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		// The navigation guardrail must gate every path that can open a URL, not
-		// just brw_open — otherwise a blocked/off-allowlist domain is reachable by
-		// wrapping it in an "open" plan step. Check up front so a blocked
-		// destination fails the whole plan before any step runs.
+
 		for i := range req.Steps {
 			st := &req.Steps[i]
 			if strings.EqualFold(st.Action, "open") && st.URL != "" {
@@ -2030,8 +1781,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		// Same guardrail as brw_plan: gate "open" steps so brw_batch cannot be
-		// used to sidestep the navigation policy that brw_open enforces.
+
 		for i := range req.Steps {
 			st := &req.Steps[i]
 			if strings.EqualFold(st.Action, "open") && st.URL != "" {
@@ -2137,8 +1887,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	case "brw_assert":
 		var req struct {
 			browser.AssertRequest
-			// Declared so strict unmarshalling accepts it; callTool has already
-			// put it on the context, which is what actually targets the tab.
+			// Declared so strict unmarshalling accepts it; callTool has already put it on the context, which is what actually targets the tab.
 			TabID string `json:"tab_id"`
 		}
 		if err := unmarshalStrictArgs(args, &req); err != nil {
@@ -2227,9 +1976,7 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		if err := unmarshalStrictArgs(args, &req); err != nil {
 			return nil, invalid(err)
 		}
-		// The capture reads the TOP document, so a ref inside a cross-origin frame
-		// would crop whatever the top-level resolver answered with instead. Refused
-		// before the service is consulted: the answer is the same on every host.
+
 		if err := browser.GuardCrossOriginRefs("artifact capture", browser.GenericCrossOriginRemedy, req.Ref); err != nil {
 			return toolError(err), nil
 		}
@@ -2346,18 +2093,6 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	}
 }
 
-func normalizeMCPSnapshotOptions(opts snapshot.SnapshotOptions) snapshot.SnapshotOptions {
-	// Shared with the HTTP surface so both transports default identically.
-	return snapshot.NormalizeOptions(opts)
-}
-
-func normalizeMCPFindOptions(opts snapshot.FindOptions) snapshot.FindOptions {
-	if opts.Limit <= 0 {
-		opts.Limit = defaultFindLimit
-	}
-	return opts
-}
-
 func parseMouseButtonArgs(args json.RawMessage) (browser.MouseButtonOptions, error) {
 	var req struct {
 		Ref    string   `json:"ref"`
@@ -2397,43 +2132,15 @@ func unmarshalStrictArgs(args json.RawMessage, dst any) error {
 	return nil
 }
 
-// tabIDArg reconciles the historical `id` parameter of brw_focus_tab /
-// brw_close_tab with the `tab_id` parameter every other page tool uses.
-// Callers that pass {tab_id:"..."} (consistent with the rest of the surface)
-// were previously silently ignored, leaving an empty id that the extension
-// bridge coerced to tab 0. Prefer `tab_id`, fall back to `id` for backward
-// compatibility.
-// tabIDArg resolves the canonical tab id from the preferred tab_id field and its
-// deprecated id alias (brw_focus_tab / brw_close_tab). Precedence is
-// intentional graceful promotion: a non-empty tab_id always wins, and id is used
-// only as a fallback. If a caller supplies both with different values, tab_id is
-// used and id is silently ignored — documented in the tool schemas where id is
-// labelled "Deprecated alias for tab_id".
-func tabIDArg(tabID, id string) string {
-	if strings.TrimSpace(tabID) != "" {
-		return tabID
+func preferredID(preferred, legacy string) string {
+	if strings.TrimSpace(preferred) != "" {
+		return preferred
 	}
-	return id
+	return legacy
 }
 
-func contextIDArg(contextID, legacyBrowserContextID string) string {
-	if strings.TrimSpace(contextID) != "" {
-		return contextID
-	}
-	return legacyBrowserContextID
-}
-
-// defaultEvaluateMaxBytes bounds the serialized brw_evaluate result returned to
-// the client. Historically an oversized result came back EMPTY (the payload was
-// silently dropped past ~11KB by a downstream size limit); we now truncate with
-// an explicit marker so the caller always gets the leading bytes plus the total
-// length, and can page through the rest with offset/max_bytes.
 const defaultEvaluateMaxBytes = 64 * 1024
 
-// evaluateResult serializes a brw_evaluate value and applies offset/max_bytes
-// windowing. An oversized window is truncated with an explicit suffix marker
-// (never returned empty). offset/max_bytes are clamped to sane ranges; passing
-// neither yields the leading defaultEvaluateMaxBytes of the result.
 func evaluateResult(value any, err error, offset, maxBytes int) (any, *rpcError) {
 	if err != nil {
 		return toolError(err), nil
@@ -2451,16 +2158,11 @@ func evaluateResult(value any, err error, offset, maxBytes int) (any, *rpcError)
 		maxBytes = defaultEvaluateMaxBytes
 	}
 
-	// offset past the end yields an explicit empty window, not a confusing nil.
 	if offset >= total {
 		text := fmt.Sprintf("…[truncated: offset %d is at or beyond end; returned 0 of %d bytes]", offset, total)
 		return map[string]any{"content": []toolContent{{Type: "text", Text: text}}}, nil
 	}
 
-	// Clamp the window WITHOUT overflowing offset+maxBytes: max_bytes is
-	// caller-controlled and could be near math.MaxInt, which would wrap
-	// negative and panic data[offset:end]. offset < total is guaranteed above,
-	// so total-offset is a safe positive bound.
 	end := total
 	if maxBytes < total-offset {
 		end = offset + maxBytes
@@ -2469,8 +2171,7 @@ func evaluateResult(value any, err error, offset, maxBytes int) (any, *rpcError)
 	truncated := offset > 0 || end < total
 
 	if !truncated {
-		// Small (or fully-covered) result: behave exactly like toolJSON so
-		// structured clients still get structuredContent for object payloads.
+
 		result := map[string]any{
 			"content": []toolContent{{Type: "text", Text: window}},
 		}
@@ -2487,20 +2188,11 @@ func evaluateResult(value any, err error, offset, maxBytes int) (any, *rpcError)
 	}, nil
 }
 
-// toolJSONWithFailureDetail is toolJSON for a tool whose failure still carries a
-// structured result. brw_recipe_run's failure_bundle_artifact_id exists only on
-// the error path, so returning the message alone — which is all toolError does —
-// would leave the field the tool description promises unreachable over MCP. The
-// text content stays the error message; the result is attached as
-// structuredContent alongside any transport classification.
 func toolJSONWithFailureDetail[T any](value T, err error) (any, *rpcError) {
 	if err == nil {
 		return toolJSON(value, nil)
 	}
-	out, ok := toolError(err).(map[string]any)
-	if !ok {
-		return toolError(err), nil
-	}
+	out := toolError(err)
 	data, marshalErr := json.Marshal(value)
 	if marshalErr != nil || !isJSONObject(data) {
 		return out, nil
@@ -2513,8 +2205,7 @@ func toolJSONWithFailureDetail[T any](value T, err error) (any, *rpcError) {
 	if structured == nil {
 		structured = map[string]any{}
 	}
-	// The classification toolError attached wins: "error" there is a stable
-	// machine code, not the message.
+
 	for name, field := range fields {
 		if _, taken := structured[name]; !taken {
 			structured[name] = field
@@ -2527,10 +2218,6 @@ func toolJSONWithFailureDetail[T any](value T, err error) (any, *rpcError) {
 	return out, nil
 }
 
-// openToolResult reports an open whose navigation failed as a tool error, so
-// an agent cannot read ready:false as a page it can act on. The tab exists
-// either way: the result fields ride along in structuredContent and the text
-// names the tab to close.
 func openToolResult(result browser.OpenResult, err error) (any, *rpcError) {
 	if err != nil {
 		return toolJSON(result, err)
@@ -2553,11 +2240,6 @@ func toolJSON[T any](value T, err error) (any, *rpcError) {
 }
 
 // ToolResultPayload is the object a successful tool result is serialized from.
-//
-// It is exported because it is also what a measurement of "what does this
-// observation cost an agent" has to weigh: the payload crosses the wire twice,
-// once as a JSON string with every quote escaped and once as structuredContent,
-// so marshalling the internal Go value alone understates it by roughly half.
 func ToolResultPayload(value any) (any, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -2566,20 +2248,13 @@ func ToolResultPayload(value any) (any, error) {
 	result := map[string]any{
 		"content": []toolContent{{Type: "text", Text: string(data)}},
 	}
-	// Per MCP, structuredContent MUST be a JSON object. Tools whose payload can
-	// be an array or scalar — notably brw_evaluate returning a string/number,
-	// or list tools returning a top-level array — would otherwise emit a
-	// non-object structuredContent that strict clients reject
-	// with an "expected record" schema error, forcing wasteful retries. Only
-	// attach structuredContent when the payload actually serializes to an object;
-	// the text content always carries the full result regardless.
+
 	if isJSONObject(data) {
 		result["structuredContent"] = value
 	}
 	return result, nil
 }
 
-// isJSONObject reports whether data is a JSON object (ignoring leading whitespace).
 func isJSONObject(data []byte) bool {
 	for _, b := range data {
 		switch b {
@@ -2601,7 +2276,7 @@ func toolOK(err error) (any, *rpcError) {
 	return map[string]any{"content": []toolContent{{Type: "text", Text: `{"ok":true}`}}}, nil
 }
 
-func toolError(err error) any {
+func toolError(err error) map[string]any {
 	if detail := approvalgate.ErrorDetails(err); detail != nil {
 		return map[string]any{"isError": true, "structuredContent": detail, "content": []toolContent{{Type: "text", Text: err.Error()}}}
 	}
@@ -2609,25 +2284,17 @@ func toolError(err error) any {
 		"isError": true,
 		"content": []toolContent{{Type: "text", Text: err.Error()}},
 	}
-	// Attach a machine-readable code for the transport-level failure classes that
-	// used to cascade into "Multiple consecutive errors detected" connector wedges
-	// (issue #11 P1-5). A wedged/blocked tab now time-boxes to a deadline error;
-	// surfacing code:"timeout" with retryable:true lets the connector back off and
-	// retry the ONE call instead of poisoning the session. Genuine tool errors
-	// (bad ref, navpolicy denial) carry no code and are left as plain text.
+
 	if code := classifyToolError(err); code != "" {
 		out["structuredContent"] = map[string]any{
 			"error":     code,
 			"message":   err.Error(),
-			"retryable": toolErrorRetryable(code),
+			"retryable": usagelog.Retryable(code),
 		}
 	}
 	return out
 }
 
-// classifyToolError maps operational failures to stable caller-facing codes.
-// Usage-only categories stay out of structuredContent so richer telemetry does
-// not silently change the MCP result contract for ordinary hard failures.
 func classifyToolError(err error) string {
 	class := usagelog.ClassifyError(err)
 	switch class {
@@ -2638,13 +2305,6 @@ func classifyToolError(err error) string {
 	default:
 		return class
 	}
-}
-
-// toolErrorRetryable reports whether a classified error is worth re-issuing. A
-// caller-cancelled call is not (the caller went away); transient transport/load
-// failures are.
-func toolErrorRetryable(code string) bool {
-	return usagelog.Retryable(code)
 }
 
 func invalid(err error) *rpcError {
@@ -3077,9 +2737,7 @@ func tools() []map[string]any {
 			"action": stringEnumSchema("mark records the baseline; compare reports what changed since it.", "mark", "compare"),
 			"tab_id": stringSchema("Tab id from brw_list_tabs. Omit for the active tab."),
 		}, []string{"action"})),
-		// The vocabulary is spelled out in the description as well as the enum
-		// because agents read prose; deriving both from GetKindNames is what stops
-		// the sentence naming a kind the enum no longer offers.
+
 		tool("brw_get", "Read ONE typed fact about the page or an element, without writing JavaScript. what="+strings.Join(snapshot.GetKindNames(), "|")+". status is the HTTP status of the current document's last cross-document navigation (0 when there was none, as for a data: or about: document). state returns every interaction flag for one element at once — {found, visible, enabled, editable, checked, focused} — and is the cheap way to ask several of those questions together. target is a brw ref from brw_snapshot or a CSS selector, and resolves across same-origin iframes and open shadow roots (plain document.querySelector does not). Use this instead of brw_evaluate for simple reads: it is one round trip, it needs no hand-written JS, and it cannot be tripped up by a value that will not serialize. To CHECK one of these rather than read it, use brw_assert: it returns expected against actual when the check does not hold.", object(map[string]any{
 			"what":   stringEnumSchema("Which fact to read.", snapshot.GetKindNames()...),
 			"target": stringSchema("Element ref from brw_snapshot, or a CSS selector. Omit for page-level facts (url, title, and text of the whole body). Required for count as the selector to count."),
@@ -3378,9 +3036,7 @@ func tools() []map[string]any {
 		sessionStateTool(),
 		baselineTool(),
 	}
-	// The developer-observation tools are defined beside their handlers in
-	// devtools.go rather than inline here, because each one carries a long
-	// description that only makes sense next to what it actually does.
+
 	return append(catalogue, devtoolsTools()...)
 }
 
@@ -3432,7 +3088,6 @@ func numberSchema(description string) map[string]any {
 	return map[string]any{"type": "number", "description": description}
 }
 
-// mousePointSchema describes a drag endpoint: a semantic ref OR x,y coordinates.
 func mousePointSchema(description string) map[string]any {
 	return map[string]any{
 		"type":        "object",

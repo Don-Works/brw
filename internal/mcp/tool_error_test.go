@@ -45,7 +45,7 @@ func TestUsageClassifiesOrdinaryFailuresWithoutChangingToolResult(t *testing.T) 
 	}
 	for _, tc := range cases {
 		result := toolError(errors.New(tc.message))
-		if _, ok := result.(map[string]any)["structuredContent"]; ok {
+		if _, ok := result["structuredContent"]; ok {
 			t.Fatalf("ordinary failure %q unexpectedly changed its MCP result contract: %#v", tc.message, result)
 		}
 		outcome, class, fingerprint := mcpUsageOutcome(result, nil)
@@ -56,7 +56,7 @@ func TestUsageClassifiesOrdinaryFailuresWithoutChangingToolResult(t *testing.T) 
 }
 
 func TestToolErrorAttachesCodeForTransportFailures(t *testing.T) {
-	res := toolError(context.DeadlineExceeded).(map[string]any)
+	res := toolError(context.DeadlineExceeded)
 	if res["isError"] != true {
 		t.Fatalf("expected isError=true")
 	}
@@ -70,7 +70,7 @@ func TestToolErrorAttachesCodeForTransportFailures(t *testing.T) {
 }
 
 func TestToolErrorNoCodeForOrdinaryError(t *testing.T) {
-	res := toolError(errors.New("no element matches ref e17")).(map[string]any)
+	res := toolError(errors.New("no element matches ref e17"))
 	if _, ok := res["structuredContent"]; ok {
 		t.Fatalf("ordinary tool errors must not carry a transport code: %#v", res)
 	}

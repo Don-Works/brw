@@ -1,11 +1,6 @@
 package mcp
 
 // AgentSystemPrompt is an opinionated operating guide for an LLM driving brw.
-// It is deliberately short and concrete so even small/cheap models run the
-// token-efficient loop instead of rediscovering it. Print it with
-// `brwd --print-system-prompt` and prepend it to the agent's system prompt.
-//
-// Keep it in sync with the tool surface in tools() and docs/agent-guide.md.
 const AgentSystemPrompt = `You control a real, visible web browser through the brw tools. Work like a
 fast human: look at the page's semantic controls, act on them by stable ref,
 and read the result that comes back. Optimize for few tool calls and few tokens.

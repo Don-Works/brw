@@ -10,7 +10,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// diffBaseline is one marked page state, kept per tab.
 type diffBaseline struct {
 	URL      string
 	Title    string
@@ -39,29 +38,24 @@ func (d *diffStore) get(tabID string) (diffBaseline, bool) {
 	return baseline, ok
 }
 
-// ElementChange names one element that appeared, disappeared or changed between
-// the marked baseline and now.
+// ElementChange names one element that appeared, disappeared or changed between the marked baseline and now.
 type ElementChange struct {
 	Ref  string `json:"ref"`
 	Role string `json:"role,omitempty"`
 	Name string `json:"name,omitempty"`
-	// From and To are set only for a changed element, and carry the value or
-	// accessible name that actually moved.
+	// From and To are set only for a changed element, and carry the value or accessible name that actually moved.
 	From string `json:"from,omitempty"`
 	To   string `json:"to,omitempty"`
 }
 
-// DiffResult answers "did my action change the page, and how?" without
-// re-reading the whole page into context.
+// DiffResult answers "did my action change the page, and how?" without re-reading the whole page into context.
 type DiffResult struct {
 	Action string `json:"action"`
 	TabID  string `json:"tab_id,omitempty"`
-	// Changed is false when the page is materially identical to the baseline,
-	// which is the answer an agent most often needs and the cheapest to act on.
+	// Changed is false when the page is materially identical to the baseline, which is the answer an agent most often needs and the cheapest to act on.
 	Changed    bool `json:"changed"`
 	URLChanged bool `json:"url_changed,omitempty"`
-	// TextChanged reports that the page's visible prose moved even when no
-	// element was added, removed or updated.
+	// TextChanged reports that the page's visible prose moved even when no element was added, removed or updated.
 	TextChanged  bool            `json:"text_changed,omitempty"`
 	URLFrom      string          `json:"url_from,omitempty"`
 	URLTo        string          `json:"url_to,omitempty"`
@@ -75,19 +69,13 @@ type DiffResult struct {
 	UpdatedCount int             `json:"updated_count"`
 	// Truncated reports that the lists were capped; the counts remain exact.
 	Truncated bool `json:"truncated,omitempty"`
-	// Summary is the one-line verdict ("unchanged", "+3 ~1", "url a -> b") an
-	// agent can branch on without reading the lists.
+	// Summary is the one-line verdict ("unchanged", "+3 ~1", "url a -> b") an agent can branch on without reading the lists.
 	Summary string `json:"summary,omitempty"`
 	Note    string `json:"note,omitempty"`
 }
 
-// maxDiffEntries caps each list. The counts stay exact, so a large diff is still
-// answerable ("300 things appeared") without paying to enumerate all of them.
 const maxDiffEntries = 40
 
-// textFingerprintExpression reports the visible prose as a length plus a cheap
-// rolling hash. Two different pages colliding on both is not a practical
-// concern for "did my click change anything".
 const textFingerprintExpression = `(function(){
   var t = document.body ? document.body.innerText : '';
   var h = 0;
@@ -106,10 +94,6 @@ func baselineFrom(snap snapshot.PageSnapshot) diffBaseline {
 	return diffBaseline{URL: snap.URL, Title: snap.Title, Elements: elements}
 }
 
-// diffSnapshots compares a marked baseline against the current page.
-//
-// Elements are matched on their identity rather than their position, so a list
-// that re-renders in place does not read as "everything removed and re-added".
 func diffSnapshots(baseline diffBaseline, snap snapshot.PageSnapshot, text string) DiffResult {
 	current := baselineFrom(snap)
 	current.Text = text
@@ -144,8 +128,7 @@ func diffSnapshots(baseline diffBaseline, snap snapshot.PageSnapshot, text strin
 	result.Truncated = result.AddedCount > len(result.Added) ||
 		result.RemovedCount > len(result.Removed) ||
 		result.UpdatedCount > len(result.Updated)
-	// A text change with no element change is the common "the page told me
-	// something" case: a validation message, a result count, a status line.
+
 	result.TextChanged = baseline.Text != "" && current.Text != "" && baseline.Text != current.Text
 	result.Changed = result.URLChanged || result.TextChanged ||
 		baseline.Title != snap.Title ||
@@ -157,8 +140,6 @@ func diffSnapshots(baseline diffBaseline, snap snapshot.PageSnapshot, text strin
 	return result
 }
 
-// elementMoved reports a change worth telling the caller about. A field that is
-// merely re-serialized identically is not a change.
 func elementMoved(before, after snapshot.Element) (from, to string, moved bool) {
 	switch {
 	case before.Value != after.Value:
@@ -207,7 +188,4 @@ func diffSummary(result DiffResult) string {
 	return strings.Join(parts, " ")
 }
 
-// activeDiffKey stands in for "whichever tab is active" when the caller did not
-// name one. A single key is correct here: an unqualified mark and an unqualified
-// compare both mean the tab the agent is working in.
 const activeDiffKey = "\x00active"

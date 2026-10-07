@@ -23,10 +23,8 @@ var usageTools map[string]bool
 func IsKnownToolName(name string) bool {
 	usageToolsOnce.Do(func() {
 		usageTools = make(map[string]bool)
-		for _, tool := range tools() {
-			if name, ok := tool["name"].(string); ok {
-				usageTools[name] = true
-			}
+		for _, name := range ToolNames() {
+			usageTools[name] = true
 		}
 	})
 	return usageTools[name]
@@ -196,9 +194,7 @@ func mcpUsageOutcome(result any, rpcErr *rpcError) (outcome, errorClass, fingerp
 		message = fmt.Sprint(content[0])
 	}
 	if errorClass == "tool" {
-		// Infer richer metadata-only categories even when the ordinary tool error
-		// deliberately has no structuredContent. This changes the private usage
-		// ledger, not the result an MCP client receives.
+
 		if inferred := usagelog.ClassifyError(errors.New(message)); inferred != "" {
 			errorClass = inferred
 		}

@@ -88,9 +88,6 @@ func TestAutoProfileCanDiscoverArtifactAndRecipeSurfaces(t *testing.T) {
 	}
 }
 
-// Substring matching scored on accidents — "file" sits inside "profile", so a
-// file search matched brw_identity and unlocked a dozen unrelated tools,
-// undoing the saving the mechanism exists for.
 func TestSearchDoesNotMatchInsideLongerWords(t *testing.T) {
 	terms := searchTerms("upload a file")
 	for _, tool := range tools() {
@@ -115,7 +112,7 @@ func TestSearchMatchesPluralAndParticipleForms(t *testing.T) {
 			t.Errorf("%q did not match brw_downloads", term)
 		}
 	}
-	// A shared stem needs a real suffix, not any prefix relationship.
+
 	if sharesStem("profile", "file") {
 		t.Error("profile and file treated as the same stem")
 	}
@@ -124,8 +121,6 @@ func TestSearchMatchesPluralAndParticipleForms(t *testing.T) {
 	}
 }
 
-// A weak description hit is worth showing — it might be the tool the agent
-// meant — but not worth carrying in the catalogue on every later turn.
 func TestSearchShowsWeakHitsWithoutUnlockingThem(t *testing.T) {
 	s := autoServer()
 	result, err := s.discoverTools("download a file")
@@ -142,7 +137,7 @@ func TestSearchShowsWeakHitsWithoutUnlockingThem(t *testing.T) {
 
 func TestSearchCapsCatalogueGrowthPerQuery(t *testing.T) {
 	s := autoServer()
-	// A deliberately vague query matches many descriptions weakly.
+
 	result, err := s.discoverTools("browser tab element state")
 	if err != nil {
 		t.Fatal(err)
@@ -184,8 +179,6 @@ func TestRepeatedSearchDisclosesAdditionalTools(t *testing.T) {
 	}
 }
 
-// Disclosure narrows what is advertised, never what is permitted. A client that
-// ignores list_changed must still be able to call anything.
 func TestUndiscoveredToolsRemainCallable(t *testing.T) {
 	s := autoServer()
 	if s.advertisedToolNames()["brw_window_bounds"] {
@@ -266,7 +259,7 @@ func TestDiscoveryMissExplainsTheFallback(t *testing.T) {
 	if result.Matches == nil {
 		t.Fatal("empty matches is nil; it would marshal as null")
 	}
-	// A miss must not leave the agent stuck: every tool is callable regardless.
+
 	if !strings.Contains(result.Note, "callable") {
 		t.Fatalf("miss note does not mention the fallback: %q", result.Note)
 	}
@@ -294,12 +287,11 @@ func TestUnlockedToolsIsConcurrencySafe(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			unlocked.unlock([]string{"brw_downloads", "brw_console"})
-			_ = unlocked.has("brw_downloads")
-			_ = unlocked.count()
+			_ = unlocked.snapshot()
 		}()
 	}
 	wg.Wait()
-	if unlocked.count() != 2 {
-		t.Fatalf("count = %d, want 2 after concurrent unlocks", unlocked.count())
+	if len(unlocked.snapshot()) != 2 {
+		t.Fatalf("count = %d, want 2 after concurrent unlocks", len(unlocked.snapshot()))
 	}
 }

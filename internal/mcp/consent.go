@@ -11,19 +11,11 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// SetSiteConsent installs the per-origin consent guard. A nil guard, or one
-// built without a store, leaves every tool exactly as it was: consent is opt-in
-// and a daemon started without it must not behave differently.
+// SetSiteConsent installs the per-origin consent guard.
 func (s *Server) SetSiteConsent(guard *siteconsent.Guard) {
 	s.consent = guard
 }
 
-// enforceSiteConsent is the gate every tool call passes through.
-//
-// The rules themselves live in internal/siteconsent because the HTTP API serves
-// the same controller: a gate enforced here alone would be bypassable by calling
-// the daemon's own route instead. This function is only the MCP-side plumbing -
-// where the live origin comes from, and where a ref's label comes from.
 func (s *Server) enforceSiteConsent(ctx context.Context, name string, args json.RawMessage) error {
 	if !s.consent.Enabled() {
 		return nil
@@ -35,11 +27,6 @@ func (s *Server) enforceSiteConsent(ctx context.Context, name string, args json.
 	)
 }
 
-// withConsentHooks installs the consent checks that cannot be answered before
-// dispatch: the per-step re-check a plan or batch needs once its own steps start
-// moving the page, the fetch check a daemon-side retrieval needs once a server
-// answers with a redirect, and the frame-read check a cross-origin iframe needs
-// once the page has been walked and its embedded origins are known.
 func (s *Server) withConsentHooks(ctx context.Context, name string, args json.RawMessage) context.Context {
 	if !s.consent.Enabled() && s.approvalGate == nil {
 		return ctx
@@ -74,15 +61,7 @@ func (s *Server) withConsentHooks(ctx context.Context, name string, args json.Ra
 	})
 }
 
-// CheckFetchDestination gates a URL the DAEMON retrieves itself rather than the
-// page: the one the call named, and every redirect hop after it.
-//
-// A grant is for an origin, not for a request. Gating only the first URL made a
-// 302 from a granted site into a read of whatever it pointed at, which is the
-// document brw never asked for that the read scope exists to cover.
-//
-// It is exported because it is half of browser.ConsentEnforcer, which is what
-// makes "every runtime question is answered" a compile error rather than a habit.
+// CheckFetchDestination gates a URL the DAEMON retrieves itself rather than the page: the one the call named, and every redirect hop after it.
 func (s *Server) CheckFetchDestination(rawURL string) error {
 	if err := s.approvalGate.CheckURL(rawURL); err != nil {
 		return err
@@ -109,13 +88,6 @@ func (s *Server) CheckFrameAct(frameOrigin string) error {
 	return s.consent.Authorize(frameOrigin, siteconsent.ScopeAct)
 }
 
-// currentPageOrigin resolves the origin a tab is showing. An empty want is the
-// tab this call targets; a named one is a tab the call moves to, which a plan's
-// focus_tab step does mid-sequence.
-//
-// It fails CLOSED. If the transport cannot say what the tab is showing, consent
-// cannot be checked against anything, and an action allowed because brw did not
-// know where it was landing is the failure this whole surface exists to stop.
 func (s *Server) currentPageOrigin(ctx context.Context, want string) (string, error) {
 	tabs, err := s.manager.ListTabs(ctx)
 	if err != nil {
@@ -144,21 +116,10 @@ func (s *Server) currentPageOrigin(ctx context.Context, want string) (string, er
 	return "", fmt.Errorf("site consent cannot decide: no active tab, so there is no origin to check this action against")
 }
 
-// maxRefLabelsPerTab bounds the ref-to-label memory. A page with more elements
-// than this loses its oldest entries, which costs a classification signal and
-// nothing else.
 const maxRefLabelsPerTab = 512
 
-// maxRefLabelTabs bounds how many tabs are remembered at once.
 const maxRefLabelTabs = 16
 
-// refLabelStore remembers the accessible name brw already reported for a ref, so
-// the confirmation gate can classify a click addressed by ref.
-//
-// Nothing here is a source of truth about the page: it is what brw last told the
-// agent, which is exactly the label the agent acted on. A ref this has never
-// seen simply yields no label, and the action is then classified by its origin
-// alone.
 type refLabelStore struct {
 	mu     sync.Mutex
 	byTab  map[string]map[string]string
