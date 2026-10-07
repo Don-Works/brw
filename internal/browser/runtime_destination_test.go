@@ -81,6 +81,7 @@ func TestRuntimeDestinationGateProtectsOutputsWithoutNavigationPolicy(t *testing
 		"cookies":   func(ctx context.Context) (any, error) { return m.Cookies(ctx, CookieParams{Action: CookieActionList}) },
 		"console":   func(ctx context.Context) (any, error) { return m.ConsoleMessages(ctx) },
 		"dialog":    func(ctx context.Context) (any, error) { return m.Dialog(ctx, DialogOptions{Action: "status"}) },
+		"notify":    func(ctx context.Context) (any, error) { return m.Notify(ctx, NotifyOptions{Kind: "done"}) },
 		"downloads": func(ctx context.Context) (any, error) { return m.Downloads(ctx) },
 		"wait":      func(ctx context.Context) (any, error) { return m.WaitForOutcome(ctx, "fn:true", 10*time.Millisecond) },
 		"assertion": func(ctx context.Context) (any, error) {
