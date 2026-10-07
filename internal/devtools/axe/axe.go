@@ -16,7 +16,7 @@ import _ "embed"
 // version reported alongside the page engine's own whenever the two could
 // differ, which is what lets a caller tell whether a rule id or an impact label
 // came from this release or from whatever was already there.
-const Version = "4.10.2"
+const Version = "4.14.0"
 
 // Source is the complete axe-core UMD bundle. Evaluating it in a page defines
 // window.axe. It is a string rather than []byte because every consumer sends it
