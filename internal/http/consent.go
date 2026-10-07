@@ -208,6 +208,14 @@ func (s *Server) CheckFrameRead(frameOrigin string) error {
 	return s.consent.Authorize(frameOrigin, siteconsent.ScopeRead)
 }
 
+// CheckFrameAct gates input into a cross-origin frame against its own act grant.
+func (s *Server) CheckFrameAct(frameOrigin string) error {
+	if err := s.approvalGate.CheckURL(frameOrigin); err != nil {
+		return err
+	}
+	return s.consent.Authorize(frameOrigin, siteconsent.ScopeAct)
+}
+
 func readConsentBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	if r.Body == nil || r.Method == http.MethodGet {
 		return nil, nil

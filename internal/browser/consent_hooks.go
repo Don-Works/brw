@@ -2,28 +2,10 @@ package browser
 
 import (
 	"context"
+	"errors"
 
 	"github.com/Don-Works/brw/internal/siteconsent"
 )
-
-// The runtime half of site consent.
-//
-// Most of the gate decides from a call's arguments before anything is
-// dispatched, which is where a refusal costs nothing. Three things cannot be
-// decided there, and all are carried on the context so a controller that knows
-// nothing about consent keeps working unchanged:
-//
-//   - A plan or batch step runs after earlier steps have already moved the page.
-//     Where it lands is a fact only the runner holds, and only at the moment the
-//     step runs.
-//   - A URL the daemon fetches itself can answer with a redirect. The hop is a
-//     destination no argument named, and only the HTTP client sees it.
-//   - A cross-origin iframe is a third party's document whose origin no argument
-//     named either. Which origins a page embeds is known only once the page has
-//     been walked and the frame targets enumerated.
-//
-// A surface installs these when it dispatches; a context without them gates
-// nothing, exactly as before consent existed.
 
 type sequenceGateKey struct{}
 
@@ -31,67 +13,41 @@ type fetchCheckKey struct{}
 
 type frameReadCheckKey struct{}
 
-// SequenceGate re-checks one plan or batch step immediately before it runs.
-// index is the step's position in the call, which is what decides whether its
-// high-risk confirmation was already asked at dispatch.
+type frameActCheckKey struct{}
+
+// SequenceGate rechecks a step immediately before execution, using its original index for confirmation.
 type SequenceGate func(index int, tabID string, step siteconsent.StepProbe) error
 
-// FetchCheck gates a URL the DAEMON retrieves itself rather than the page,
-// including every redirect hop. A grant is for an origin, not for a request, so
-// a 302 from a granted site to an un-granted one is a read of a site nobody
-// consented to.
+// FetchCheck gates a URL the DAEMON retrieves itself rather than the page, including every redirect hop.
 type FetchCheck func(rawURL string) error
 
-// FrameReadCheck gates reaching INTO a cross-origin iframe: reading its document
-// and acting inside it.
-//
-// include_frames attaches a CDP session to the frame's own target and runs the
-// walker in a THIRD PARTY's document — the payment form, the embedded editor,
-// the social widget. Clicking an f<i>:<ref> attaches the same session, evaluates
-// brw's actionability and box scripts there, and dispatches a gesture at the
-// result. Both were gated against the EMBEDDER's origin, which is not a grant to
-// read or actuate what the embedder happens to have embedded, so each frame
-// origin is checked on its own. A frame this refuses is still reported by a
-// snapshot, as the clickable box it was before include_frames could read it at
-// all; a click on a ref inside it is refused by name.
+// FrameReadCheck gates page and cross-origin document reads against each committed origin.
 type FrameReadCheck func(frameOrigin string) error
 
-// ConsentEnforcer is the surface-side half of the runtime gate: the decisions a
-// dispatching surface makes while a call is already in flight.
-//
-// It is ONE interface rather than a hook each surface installs by hand because
-// that is exactly how the hole opened: the MCP surface installed the fetch check
-// and the frame-read check, the HTTP surface installed the fetch check alone, and
-// `GET /api/page/snapshot?include_frames=true` walked a third party's document
-// with nothing decided about its origin. Gating on the hook a surface remembered
-// to install is gating on the lane. Gating on this interface is gating on the
-// property: a surface either answers every runtime question or does not compile,
-// and a hook added here stops compiling every surface that has not decided what
-// to do about it.
-//
-// The per-step sequence gate is not here. It is built per CALL from that call's
-// own arguments and is legitimately absent for a tool that runs no steps, so it
-// stays a separate installer.
+// FrameActCheck gates acting inside a cross-origin document against its own origin.
+type FrameActCheck func(frameOrigin string) error
+
+// ErrFrameActCheckMissing refuses frame actuation when a caller installed only a read gate.
+var ErrFrameActCheckMissing = errors.New("cross-origin frame actions require a runtime act permission check; a frame read grant does not permit acting")
+
+// ConsentEnforcer supplies every runtime destination and frame permission check.
 type ConsentEnforcer interface {
-	// CheckFetchDestination gates a URL the DAEMON retrieves itself rather than
-	// the page, including every redirect hop.
+	// CheckFetchDestination gates a URL the DAEMON retrieves itself rather than the page, including every redirect hop.
 	CheckFetchDestination(rawURL string) error
-	// CheckFrameRead gates reading the document inside one cross-origin iframe,
-	// and acting inside it, against that frame's own origin.
+	// CheckFrameRead gates document reads against the committed origin.
 	CheckFrameRead(frameOrigin string) error
+	// CheckFrameAct gates input in a cross-origin document independently of read permission.
+	CheckFrameAct(frameOrigin string) error
 }
 
-// WithRuntimeConsent installs every runtime hook a surface answers. It is the
-// only thing a dispatching surface calls: the individual installers below stay
-// exported for tests that drive one hook in isolation, and
-// TestEveryConsentInstallerIsAnEnumeratedSurface (internal/http) fails on
-// production code that reaches for one of them instead of this.
+// WithRuntimeConsent installs every runtime hook a surface answers.
 func WithRuntimeConsent(ctx context.Context, enforcer ConsentEnforcer) context.Context {
 	if enforcer == nil {
 		return ctx
 	}
 	ctx = WithFetchCheck(ctx, enforcer.CheckFetchDestination)
 	ctx = WithFrameReadCheck(ctx, enforcer.CheckFrameRead)
+	ctx = WithFrameActCheck(ctx, enforcer.CheckFrameAct)
 	return ctx
 }
 
@@ -103,10 +59,7 @@ func WithSequenceGate(ctx context.Context, gate SequenceGate) context.Context {
 	return context.WithValue(ctx, sequenceGateKey{}, gate)
 }
 
-// GateSequenceStep applies the installed per-step re-check, if there is one. It
-// is exported because the extension bridge runs the same step verbs through its
-// own runners, and a gate one transport honours and the other does not is a
-// bypass by choice of transport.
+// GateSequenceStep applies the installed per-step re-check, if there is one.
 func GateSequenceStep(ctx context.Context, index int, tabID string, step siteconsent.StepProbe) error {
 	gate, ok := ctx.Value(sequenceGateKey{}).(SequenceGate)
 	if !ok || gate == nil {
@@ -125,10 +78,7 @@ func WithFetchCheck(ctx context.Context, check FetchCheck) context.Context {
 
 // FetchCheckFromContext returns the installed daemon-side fetch gate, or nil.
 func FetchCheckFromContext(ctx context.Context) FetchCheck {
-	check, ok := ctx.Value(fetchCheckKey{}).(FetchCheck)
-	if !ok {
-		return nil
-	}
+	check, _ := ctx.Value(fetchCheckKey{}).(FetchCheck)
 	return check
 }
 
@@ -140,31 +90,34 @@ func WithFrameReadCheck(ctx context.Context, check FrameReadCheck) context.Conte
 	return context.WithValue(ctx, frameReadCheckKey{}, check)
 }
 
-// FrameReadCheckFromContext returns the installed frame read gate, or nil. A
-// context without one gates nothing, exactly as before consent existed.
+// FrameReadCheckFromContext returns the installed frame read gate, or nil.
 func FrameReadCheckFromContext(ctx context.Context) FrameReadCheck {
-	check, ok := ctx.Value(frameReadCheckKey{}).(FrameReadCheck)
-	if !ok {
-		return nil
-	}
+	check, _ := ctx.Value(frameReadCheckKey{}).(FrameReadCheck)
 	return check
 }
 
-// carryConsentHooks copies the consent hooks from one context onto another.
-//
-// A per-tab CDP context is long-lived and derived from the browser allocator,
-// not from the call that uses it, so a hook the caller installed does not reach
-// it on its own. Every place that swaps a call's context for a tab's has to
-// carry them across or the gate silently stops running there.
+// WithFrameActCheck installs the cross-origin frame act gate.
+func WithFrameActCheck(ctx context.Context, check FrameActCheck) context.Context {
+	if check == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, frameActCheckKey{}, check)
+}
+
+// FrameActCheckFromContext returns the installed cross-origin act gate, or nil.
+func FrameActCheckFromContext(ctx context.Context) FrameActCheck {
+	check, _ := ctx.Value(frameActCheckKey{}).(FrameActCheck)
+	return check
+}
+
 func carryConsentHooks(from, to context.Context) context.Context {
 	if gate, ok := from.Value(sequenceGateKey{}).(SequenceGate); ok && gate != nil {
-		to = context.WithValue(to, sequenceGateKey{}, gate)
+		to = WithSequenceGate(to, gate)
 	}
-	if check, ok := from.Value(fetchCheckKey{}).(FetchCheck); ok && check != nil {
-		to = context.WithValue(to, fetchCheckKey{}, check)
-	}
-	if check, ok := from.Value(frameReadCheckKey{}).(FrameReadCheck); ok && check != nil {
-		to = context.WithValue(to, frameReadCheckKey{}, check)
+	to = WithFetchCheck(to, FetchCheckFromContext(from))
+	to = WithFrameReadCheck(to, FrameReadCheckFromContext(from))
+	if check := FrameActCheckFromContext(from); check != nil {
+		to = WithFrameActCheck(to, check)
 	}
 	return to
 }

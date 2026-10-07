@@ -169,20 +169,6 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     return '';
   }
 
-  function sensitive(el) {
-    if (!el || !el.tagName) return false;
-    const tag = el.tagName.toLowerCase();
-    if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') return false;
-    const type = (el.getAttribute('type') || '').toLowerCase();
-    if (type === 'password' || type === 'hidden') return true;
-    const ac = (el.getAttribute('autocomplete') || '').toLowerCase();
-    const sensitiveHints = ['current-password', 'new-password', 'one-time-code', 'cc-number', 'cc-csc', 'cc-exp', 'cc-exp-month', 'cc-exp-year', 'cc-name', 'cc-type', 'cc-given-name', 'cc-family-name', 'cc-number'];
-    for (const hint of sensitiveHints) {
-      if (ac.includes(hint)) return true;
-    }
-    return false;
-  }
-
   function textFor(el) {
     const tag = el.tagName.toLowerCase();
     if (tag === 'input') return clean(el.value || el.getAttribute('value') || '');
@@ -197,7 +183,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
       el.getAttribute('title') ||
       el.getAttribute('placeholder') ||
       el.getAttribute('name') ||
-      (sensitive(el) ? '' : textFor(el))
+      (__abSensitive(el) ? '' : textFor(el))
     );
   }
 
@@ -589,7 +575,7 @@ const SnapshotFunctionScript = `(function(opts) {` + FrameWalkHelpers + `
     const selected = ('selected' in el) ? Boolean(el.selected) : (el.getAttribute('aria-selected') === 'true' ? true : (el.getAttribute('aria-selected') === 'false' ? false : (el.classList && (el.classList.contains('selected') || el.classList.contains('is-selected')) ? true : null)));
     const expanded = el.getAttribute('aria-expanded') === 'true' ? true : (el.getAttribute('aria-expanded') === 'false' ? false : null);
     const signals = structuralSignals(el, role, active);
-    const isSensitive = sensitive(el);
+    const isSensitive = __abSensitive(el);
     const rawValue = ('value' in el) ? clean(el.value) : clean(el.getAttribute('data-value') || el.getAttribute('value') || '');
     const cachedVisible = visible(el);
     const cachedViewport = inViewport(el);

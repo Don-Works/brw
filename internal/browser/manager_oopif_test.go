@@ -15,11 +15,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// oopifInnerDoc is served on a different SITE from its embedder (localhost vs
-// 127.0.0.1 — Chrome's site isolation ignores the port), so Chrome puts it in its
-// own renderer process and gives it a CDP target of its own. It records its own
-// clicks, which is the only evidence that distinguishes a click that reached the
-// frame's document from one that landed on the embedder.
 const oopifInnerDoc = `<!doctype html>
 <html><head><meta charset="utf-8"><title>embedded editor</title></head>
 <body style="margin:0">
@@ -35,9 +30,6 @@ const oopifInnerDoc = `<!doctype html>
   </script>
 </body></html>`
 
-// oopifDisabledInnerDoc is the same document with the control disabled. A click
-// path that skips the actionability gate dispatches at its coordinates and
-// reports OK, because a disabled button swallows the event silently.
 const oopifDisabledInnerDoc = `<!doctype html>
 <html><head><meta charset="utf-8"><title>embedded editor</title></head>
 <body style="margin:0">
@@ -45,9 +37,6 @@ const oopifDisabledInnerDoc = `<!doctype html>
   <div id="log"></div>
 </body></html>`
 
-// oopifDeepInnerDoc puts the control far down a document that exactly fills its
-// frame, so the FRAME has nothing to scroll: the only way the point could come
-// into view is the embedder scrolling, and a fixed frame denies that too.
 const oopifDeepInnerDoc = `<!doctype html>
 <html><head><meta charset="utf-8"><title>embedded editor</title></head>
 <body style="margin:0">
@@ -63,10 +52,6 @@ const oopifDeepInnerDoc = `<!doctype html>
   </script>
 </body></html>`
 
-// oopifFixtureServer serves one embedder whose iframe carries the given style,
-// on a different site from the frame it embeds. The embedder records every click
-// that reaches it: a click inside a nested browsing context does not, so a
-// non-empty log is proof the click landed in the wrong document.
 func oopifFixtureServer(t *testing.T, innerDoc, bodyStyle, iframeStyle string) string {
 	t.Helper()
 	inner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -104,8 +89,6 @@ func refNamed(elements []snapshot.Element, name string) string {
 	return ""
 }
 
-// newOOPIFManager launches one headless Chrome with site isolation on and a
-// viewport small enough that a frame placed below the fold really is off screen.
 func newOOPIFManager(t *testing.T, ctx context.Context) *Manager {
 	t.Helper()
 	if _, err := cdp.FindChrome(""); err != nil {
@@ -114,12 +97,11 @@ func newOOPIFManager(t *testing.T, ctx context.Context) *Manager {
 	profile := browsertest.NewProfile(t)
 	m, err := New(ctx, Config{
 		Timeout: 30 * time.Second,
-		// Its own profile: the shared default one is held by whatever brw Chrome
-		// is already running, and a test that skips because of that proves nothing.
+
 		UserDataDir: profile.Dir(),
 		ChromeArgs: []string{
 			"--headless=new", "--disable-gpu", "--no-sandbox",
-			// The frame has to land in its own process for this to be an OOPIF at all.
+
 			"--site-per-process",
 			"--window-size=900,700",
 		},
@@ -131,18 +113,6 @@ func newOOPIFManager(t *testing.T, ctx context.Context) *Manager {
 	return m
 }
 
-// TestManagerClicksARefInsideACrossOriginFrame is the end-to-end acceptance for
-// task Q5YB9D on the transport that supports it: brw_snapshot with
-// include_frames surfaces the controls inside an out-of-process iframe as refs,
-// and brw_click on one of those refs actuates the element in that frame — or
-// refuses by name when it cannot.
-//
-// The below-the-fold case is the one that made the difference between "the ref
-// resolves" and "the click lands where the ref points". Resolving translated the
-// frame-local box by the frame's box and stopped there, so a frame at y=3200 in a
-// 700px viewport produced a point far below the fold; CDP clamps such a point
-// into the visible page, so the click was dispatched into the EMBEDDING document
-// and the observation, which reads the top document, called it a success.
 func TestManagerClicksARefInsideACrossOriginFrame(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
 	defer cancel()
@@ -173,8 +143,7 @@ func TestManagerClicksARefInsideACrossOriginFrame(t *testing.T) {
 			wantErr:     "not actionable",
 		},
 		{
-			// Neither the frame nor the page can scroll the control into view, so
-			// there is no point to click and the only honest answer is a refusal.
+
 			name:        "control outside a frame nothing can scroll",
 			innerDoc:    oopifDeepInnerDoc,
 			iframeStyle: "position:fixed;left:100px;top:0;width:320px;height:4000px",
@@ -191,9 +160,7 @@ func TestManagerClicksARefInsideACrossOriginFrame(t *testing.T) {
 			}
 			tabCtx := WithTabID(ctx, opened.Tab.ID)
 			t.Cleanup(func() { _ = m.CloseTab(ctx, opened.Tab.ID) })
-			// Until the iframe commits its cross-origin document it holds a
-			// same-origin about:blank, which the walker rightly reports as no frame
-			// to read. A fixed sleep lost that race on a loaded CI runner.
+
 			var snap snapshot.PageSnapshot
 			var ref string
 			for deadline := time.Now().Add(15 * time.Second); ; {
@@ -240,11 +207,6 @@ func TestManagerClicksARefInsideACrossOriginFrame(t *testing.T) {
 	}
 }
 
-// assertEmbedderGotNoClick fails when the embedding document saw a click. It is
-// the half that catches a point translated into the wrong coordinate space: the
-// frame recording nothing and the embedder recording something are the same bug
-// seen from two sides, and only this side distinguishes it from a click that
-// simply missed.
 func assertEmbedderGotNoClick(t *testing.T, m *Manager, tabCtx context.Context) {
 	t.Helper()
 	value, err := m.Evaluate(tabCtx, `JSON.stringify(window.__topClicks || [])`)
@@ -257,10 +219,6 @@ func assertEmbedderGotNoClick(t *testing.T, m *Manager, tabCtx context.Context) 
 	}
 }
 
-// TestManagerRefusesNonClickVerbsOnCrossOriginRefs is the other side of the same
-// capability: direct CDP routes a CLICK into the frame and nothing else, and it
-// has to say which by name rather than answering "ref not found, re-snapshot" —
-// advice that can never help, because re-snapshotting mints the same ref.
 func TestManagerRefusesNonClickVerbsOnCrossOriginRefs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -298,17 +256,6 @@ func elementSummary(elements []snapshot.Element) []string {
 	return out
 }
 
-// TestClickIntoACrossOriginFrameAsksAboutTheFramesOwnOrigin is the consent half
-// of the click path, on the wired verb.
-//
-// brw_click on an f<i>:<ref> attaches a CDP session to the frame's own target,
-// evaluates brw's actionability and box scripts inside that third party's
-// document and dispatches a real gesture at the result. include_frames asks
-// consent before doing the same thing; the click did not, and nothing made it
-// wait for a read: findFrameHandle runs the boxing walk and stamps the frames
-// itself, so f0:e1 guessed blind reached the embedded payment form. The click was
-// authorized against the origin the TAB is showing, which is not a grant to
-// actuate what that page embeds.
 func TestClickIntoACrossOriginFrameAsksAboutTheFramesOwnOrigin(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
 	defer cancel()
@@ -334,9 +281,9 @@ func TestClickIntoACrossOriginFrameAsksAboutTheFramesOwnOrigin(t *testing.T) {
 	}
 
 	var asked []string
-	refuseCtx := WithFrameReadCheck(tabCtx, func(origin string) error {
+	refuseCtx := WithFrameActCheck(tabCtx, func(origin string) error {
 		asked = append(asked, origin)
-		return errors.New("no site permission grant for " + origin + " (scope read)")
+		return errors.New("no site permission grant for " + origin + " (scope act)")
 	})
 	_, clickErr := m.Click(refuseCtx, ref)
 	if clickErr == nil {
@@ -358,9 +305,7 @@ func TestClickIntoACrossOriginFrameAsksAboutTheFramesOwnOrigin(t *testing.T) {
 	}
 	assertEmbedderGotNoClick(t, m, tabCtx)
 
-	// The same ref with the gate allowing it clicks, so the gate is what decided
-	// rather than the click having quietly broken.
-	if _, err := m.Click(allowCtx, ref); err != nil {
+	if _, err := m.Click(WithFrameActCheck(allowCtx, func(string) error { return nil }), ref); err != nil {
 		t.Fatalf("click %q with the frame's origin granted: %v", ref, err)
 	}
 	after, err := m.Snapshot(allowCtx, snapshot.SnapshotOptions{Mode: "all", IncludeFrames: true})
@@ -372,11 +317,6 @@ func TestClickIntoACrossOriginFrameAsksAboutTheFramesOwnOrigin(t *testing.T) {
 	}
 }
 
-// TestOpenDoesNotStrandACrossSiteFrameThatLoadsDuringTheNavigation loads a
-// cross-site frame while Open's inline-document arm is live: the host page holds
-// its own document open until the frame's response has been served. Armed for
-// every document, a frame response paused as Fetch.disable landed stayed on
-// about:blank for good.
 func TestOpenDoesNotStrandACrossSiteFrameThatLoadsDuringTheNavigation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()

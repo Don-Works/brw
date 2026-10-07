@@ -9,15 +9,10 @@ import (
 	"github.com/Don-Works/brw/internal/siteconsent"
 )
 
-// carriedHookProbes maps each method of ConsentEnforcer to the way a context is
-// asked whether that hook reached it.
-//
-// It is keyed by method name so the interface is the list: a hook added to
-// ConsentEnforcer fails the coverage check below until someone says how to
-// observe it, and then fails the carry check until carryConsentHooks copies it.
 var carriedHookProbes = map[string]func(context.Context) bool{
 	"CheckFetchDestination": func(ctx context.Context) bool { return FetchCheckFromContext(ctx) != nil },
 	"CheckFrameRead":        func(ctx context.Context) bool { return FrameReadCheckFromContext(ctx) != nil },
+	"CheckFrameAct":         func(ctx context.Context) bool { return FrameActCheckFromContext(ctx) != nil },
 }
 
 type stubEnforcer struct{}
@@ -26,15 +21,8 @@ func (stubEnforcer) CheckFetchDestination(string) error { return errors.New("ref
 
 func (stubEnforcer) CheckFrameRead(string) error { return errors.New("refused") }
 
-// TestCarryConsentHooksCarriesEveryRuntimeHook is the other half of the surface
-// parity test, one layer down.
-//
-// A surface installs the hooks on the CALL's context. A per-tab CDP context is
-// long-lived and derived from the browser allocator instead, so every place that
-// swaps one for the other has to copy the hooks across or the gate stops running
-// there — a bypass by choice of code path rather than by choice of surface, and
-// invisible either way. carryConsentHooks is a hand-written list of three keys,
-// so the enumeration is against ConsentEnforcer rather than against itself.
+func (stubEnforcer) CheckFrameAct(string) error { return errors.New("refused") }
+
 func TestCarryConsentHooksCarriesEveryRuntimeHook(t *testing.T) {
 	iface := reflect.TypeOf((*ConsentEnforcer)(nil)).Elem()
 	for i := 0; i < iface.NumMethod(); i++ {
@@ -72,5 +60,16 @@ func TestCarryConsentHooksCarriesEveryRuntimeHook(t *testing.T) {
 	}
 	if gated != 1 {
 		t.Errorf("the carried sequence gate was called %d times, want once", gated)
+	}
+}
+
+func TestAFrameReadHookCannotAuthorizeAnAction(t *testing.T) {
+	reads := 0
+	ctx := WithFrameReadCheck(context.Background(), func(string) error { reads++; return nil })
+	if _, err := (&Manager{}).clickCrossOriginFrameRef(ctx, "f0:e1"); !errors.Is(err, ErrFrameActCheckMissing) {
+		t.Fatalf("frame action with only a read hook = %v", err)
+	}
+	if reads != 0 {
+		t.Fatalf("frame action asked a read gate %d times", reads)
 	}
 }
