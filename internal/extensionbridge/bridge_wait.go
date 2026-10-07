@@ -11,27 +11,13 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// The extension transport has no chrome.debugger attachment, so it cannot
-// subscribe to Browser.downloadProgress or Page.javascriptDialogOpening the way
-// the direct-CDP transport does. Those two conditions are answered by re-asking
-// the extension's own registries on a bounded, backing-off cadence. Everything
-// else is answered by ONE awaited in-page promise, which is not a poll.
-//
-// The cadence starts tight enough that a wait feels immediate and backs off so a
-// long wait does not keep the message port busy; each tick is one RPC over the
-// bridge, which is why the ceiling matters more here than it would over CDP.
 const (
 	waitFallbackPollStart = 60 * time.Millisecond
 	waitFallbackPollMax   = 400 * time.Millisecond
-	// waitChunkGrace is how long past its own in-page timer one awaited chunk
-	// may take to answer before the wait gives up on that round trip.
+
 	waitChunkGrace = 2 * time.Second
 )
 
-// The NAMED capability failures for the two waits the extension answers from its
-// own registries. A wait cannot degrade to the Supported=false note the snapshot
-// calls return: it either resolves or says why it never can, so the caller does
-// not read a timeout as "the download failed".
 const (
 	downloadWaitUnsupportedErr = "cannot wait for a download: the connected brw extension predates chrome.downloads support (issue #6) — reload the brw extension, or restart brw with the direct-CDP backend"
 	dialogWaitUnsupportedErr   = "cannot wait for a dialog: the connected brw extension predates brw_dialog support — reload the brw extension, or restart brw with the direct-CDP backend"
@@ -39,14 +25,11 @@ const (
 
 // WaitFor blocks until condition holds.
 func (b *Bridge) WaitFor(ctx context.Context, condition string, timeout time.Duration) error {
-	// The cross-origin refusal lives in WaitForOutcome, which this delegates to.
 	_, err := b.WaitForOutcome(ctx, condition, timeout)
 	return err
 }
 
-// WaitForOutcome resolves a wait and reports what resolved it. It implements
-// browser.WaitObserver, so brw_wait_for answers the same shape on both
-// transports and a caller can see which mechanism it got.
+// WaitForOutcome resolves a wait and reports what resolved it.
 func (b *Bridge) WaitForOutcome(ctx context.Context, condition string, timeout time.Duration) (browser.WaitOutcome, error) {
 	if err := browser.GuardCrossOriginRefs("wait for", browser.BridgeCrossOriginRemedy, snapshot.WaitConditionRef(condition)); err != nil {
 		return browser.WaitOutcome{}, err
@@ -82,17 +65,6 @@ func waitConditionArgument(condition, name string) (string, bool) {
 	return "", false
 }
 
-// waitForConditionInPage waits via a SINGLE in-page promise (WaitConditionScript)
-// that resolves the instant the condition holds — a MutationObserver/history-driven
-// check running inside the renderer — instead of re-evaluating a heavy condition
-// script across the bridge every 25-250ms. The old cross-process poll made each tick
-// a full document.body.innerText / shadow-DOM walk; ten concurrent waits against a
-// large (10k-row) page flooded the extension's debugger with hundreds of heavy
-// evaluates a second and wedged the whole bridge until the waits expired. One
-// awaited in-page promise per wait keeps bridge load flat no matter how many waits
-// run concurrently. The await is chunked under b.timeout and re-armed, so a
-// navigation that destroys the execution context simply continues against the new
-// document.
 func (b *Bridge) waitForConditionInPage(ctx context.Context, condition string, timeout time.Duration, deadline time.Time) (browser.WaitOutcome, error) {
 	waitCtx, cancelWait := context.WithDeadline(ctx, deadline)
 	defer cancelWait()
@@ -101,8 +73,6 @@ func (b *Bridge) waitForConditionInPage(ctx context.Context, condition string, t
 		return browser.WaitOutcome{Wakeups: attempts}, fmt.Errorf("timed out waiting for %q after %s; the condition was never met — check that the page is loaded and the condition is correct (valid: ready, committed, load, networkidle, text:..., url:..., title:..., ref:..., selector:..., fn:..., dialog, download, page_ready)", condition, timeout)
 	}
 	for {
-		// Cooperative cancellation: a Cancel on the surrounding plan/batch (or this
-		// tab) cancels ctx, unblocking a long wait promptly.
 		if err := ctx.Err(); err != nil {
 			return browser.WaitOutcome{Wakeups: attempts}, fmt.Errorf("wait for %q cancelled", condition)
 		}
@@ -115,9 +85,7 @@ func (b *Bridge) waitForConditionInPage(ctx context.Context, condition string, t
 			chunk = limit
 		}
 		attempts++
-		// The in-page promise resolves at chunk on its own timer; the round trip
-		// is bounded just past that so a renderer that never answers ends the
-		// wait at the caller's timeout_ms rather than at the daemon's --timeout.
+
 		chunkCtx, cancelChunk := context.WithTimeout(waitCtx, chunk+waitChunkGrace)
 		matched, err := b.waitConditionOnce(chunkCtx, condition, chunk)
 		cancelChunk()
@@ -131,9 +99,6 @@ func (b *Bridge) waitForConditionInPage(ctx context.Context, condition string, t
 			return timedOut()
 		}
 		if err != nil {
-			// A navigation can destroy the in-page execution context mid-await; pause
-			// briefly, then re-arm the promise against the new document rather than
-			// hot-looping on the transient "context was destroyed" error.
 			select {
 			case <-waitCtx.Done():
 				if ctx.Err() != nil {
@@ -146,11 +111,6 @@ func (b *Bridge) waitForConditionInPage(ctx context.Context, condition string, t
 	}
 }
 
-// waitForDownloadPolled re-reads the extension's chrome.downloads registry until
-// a download that was not already finished when the wait started completes.
-// Baseline and matching mirror the direct-CDP wait (see Manager.waitForDownload)
-// down to the recency window, so the same wait answers the same way on both
-// transports; only the cost of noticing differs.
 func (b *Bridge) waitForDownloadPolled(ctx context.Context, match string, deadline time.Time) (browser.WaitOutcome, error) {
 	needle := strings.ToLower(strings.TrimSpace(match))
 	matches := func(entry browser.DownloadEntry) bool {
@@ -161,13 +121,6 @@ func (b *Bridge) waitForDownloadPolled(ctx context.Context, match string, deadli
 			strings.Contains(strings.ToLower(entry.URL), needle)
 	}
 
-	// Baseline: a download that was already terminal when the wait started is old
-	// news, UNLESS it reached that state inside the recency window — a wait is
-	// written after the click that triggers it and a small file frequently
-	// finishes first. This is the direct-CDP rule (Manager.downloadSettledBefore)
-	// applied to the extension's own change timestamps; a build that sends none
-	// gives every already-terminal download the "old" reading, which is what a
-	// registry with no timestamp means on either transport.
 	baseline := map[string]bool{}
 	first := true
 	cutoff := time.Now().Add(-browser.RecentDownloadWindow)
@@ -201,17 +154,11 @@ func (b *Bridge) waitForDownloadPolled(ctx context.Context, match string, deadli
 	})
 }
 
-// settledInsideWindow reports whether the extension recorded this download
-// changing state at or after cutoff. An unknown time is old: it means the
-// extension never told us when, not that it just happened.
 func settledInsideWindow(changedAt map[string]time.Time, guid string, cutoff time.Time) bool {
 	at, known := changedAt[guid]
 	return known && !at.Before(cutoff)
 }
 
-// waitForDialogPolled re-reads the extension's answered-dialog ring. The read is
-// a peek: consuming the ring here would steal the record from the brw_dialog
-// status call the caller is very likely to make next.
 func (b *Bridge) waitForDialogPolled(ctx context.Context, match string, deadline time.Time) (browser.WaitOutcome, error) {
 	needle := strings.ToLower(strings.TrimSpace(match))
 	cutoff := time.Now().Add(-browser.RecentDialogWindow)
@@ -243,9 +190,6 @@ func (b *Bridge) waitForDialogPolled(ctx context.Context, match string, deadline
 	})
 }
 
-// pollUntil runs check on a backing-off cadence until it reports true, fails, or
-// the deadline passes. Wakeups counts the checks, which is what makes the cost
-// of the fallback visible to the caller in the wait's own result.
 func (b *Bridge) pollUntil(ctx context.Context, deadline time.Time, condition string, check func() (bool, error)) (browser.WaitOutcome, error) {
 	interval := waitFallbackPollStart
 	checks := 0

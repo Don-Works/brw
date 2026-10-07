@@ -7,9 +7,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// React runs the shared fiber-walker expression through the bridge's own
-// Evaluate. React introspection is a page read, not debugger-session state, so
-// unlike the environment overrides it works on the signed-in transport too.
 var _ browser.ReactController = (*Bridge)(nil)
 
 func (b *Bridge) React(ctx context.Context, opts browser.ReactOptions) (browser.ReactResult, error) {

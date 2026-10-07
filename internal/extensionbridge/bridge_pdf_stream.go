@@ -11,12 +11,7 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// CapturePDFStream renders the current page through the extension's CDP bridge
-// and returns the PDF as a stream, so the browser host never holds the whole
-// document. Parity with the direct-CDP transport is deliberate: a capability
-// present on one transport and silently absent on the other turns a memory
-// guarantee into a coin toss, decided by which profile a caller happens to be
-// driving.
+// CapturePDFStream renders the current page through the extension's CDP bridge and returns the PDF as a stream, so the browser host never holds the whole document.
 func (b *Bridge) CapturePDFStream(ctx context.Context) (io.ReadCloser, error) {
 	tabID := b.contextTabID(ctx)
 	raw, err := b.cdp(ctx, tabID, "Page.printToPDF", map[string]any{
@@ -42,9 +37,6 @@ func (b *Bridge) CapturePDFStream(ctx context.Context) (io.ReadCloser, error) {
 	return reader, nil
 }
 
-// bridgeStreamReader holds one decoded chunk at a time. It keeps the request
-// context because IO.read is a round trip like any other bridge call and must
-// stay cancellable by the caller that started the capture.
 type bridgeStreamReader struct {
 	bridge *Bridge
 	ctx    context.Context
@@ -108,13 +100,7 @@ func (r *bridgeStreamReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// Close releases the browser-side handle. A stream left open pins the rendered
-// document in the browser process for the life of the tab.
-//
-// The close deliberately does NOT inherit the caller's cancellation. A capture
-// that was cancelled or timed out mid-copy is exactly when the handle is most
-// likely to leak, and issuing IO.close on the context that just died would
-// guarantee it does. Bridge.call still bounds this with its own timeout.
+// Close releases the browser-side handle.
 func (r *bridgeStreamReader) Close() error {
 	if r.closed {
 		return nil

@@ -8,13 +8,8 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// cancelAllToken is the wildcard token: cancelling it signals every in-flight
-// cancellable operation regardless of token. Mirrors browser.cancelAllToken.
 const cancelAllToken = "*"
 
-// cancelEntry tracks one in-flight cancellable operation on the extension
-// bridge. It mirrors the browser.Manager mechanism so cancellation behaves the
-// same across both transports.
 type cancelEntry struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -40,7 +35,6 @@ func (e *cancelEntry) Cancelled() bool {
 	return e.cancelled
 }
 
-// cancelRegistry maps an operation token to the set of in-flight entries.
 type cancelRegistry struct {
 	mu      sync.Mutex
 	entries map[string]map[*cancelEntry]struct{}
@@ -102,9 +96,6 @@ func (r *cancelRegistry) cancel(token string) int {
 	return len(targets)
 }
 
-// cancelToken derives the cancellation token from an operation's context. Keyed
-// by tab id so callers can cancel work targeting a specific tab; an explicit
-// token always overrides.
 func cancelToken(ctx context.Context, explicit string) string {
 	if t := strings.TrimSpace(explicit); t != "" {
 		return t
@@ -112,10 +103,7 @@ func cancelToken(ctx context.Context, explicit string) string {
 	return browser.TabIDFromContext(ctx)
 }
 
-// Cancel signals in-flight long-running operations on the bridge to stop
-// cooperatively. The token selects which operations to stop: an explicit token,
-// the tab id, or "*" to stop everything. Cancelling a token with nothing in
-// flight reports cancelled:0; it is never an error.
+// Cancel signals in-flight long-running operations on the bridge to stop cooperatively.
 func (b *Bridge) Cancel(ctx context.Context, token string) (browser.CancelResult, error) {
 	resolved := cancelToken(ctx, token)
 	if resolved == "" {

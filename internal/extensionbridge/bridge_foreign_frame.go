@@ -4,20 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 )
 
-// foreignExtensionFrame is one other-extension frame the extension reported as
-// the reason Chrome refused the debugger.
 type foreignExtensionFrame struct {
 	FrameID     int    `json:"frame_id"`
 	URL         string `json:"url"`
 	ExtensionID string `json:"extension_id"`
 }
 
-// pageTransport is what the extension appends to a CDP answer it produced
-// without the debugger.
 type pageTransport struct {
 	Path                   string                  `json:"path"`
 	FrameID                int                     `json:"frame_id"`
@@ -25,9 +22,6 @@ type pageTransport struct {
 	BlockedBy              []foreignExtensionFrame `json:"blocked_by"`
 }
 
-// pageTransportNote collects, across every CDP call one observation makes,
-// whether any of them was answered without the debugger and how many
-// other-extension frames were left out.
 type pageTransportNote struct {
 	mu        sync.Mutex
 	scripting bool
@@ -93,8 +87,6 @@ func (n *pageTransportNote) addSkippedLocked(count int, frames []foreignExtensio
 	}
 }
 
-// apply records the note on a snapshot's metadata. It leaves metadata alone
-// when every call went through the debugger and nothing was skipped.
 func (n *pageTransportNote) apply(metadata map[string]any) map[string]any {
 	if n == nil {
 		return metadata
@@ -115,6 +107,7 @@ func (n *pageTransportNote) apply(metadata map[string]any) map[string]any {
 			extensions = append(extensions, frame.ExtensionID)
 		}
 	}
+	slices.Sort(extensions)
 	metadata["skipped_extension_frames"] = n.skipped
 	if len(extensions) > 0 {
 		metadata["skipped_extension_ids"] = extensions

@@ -13,10 +13,6 @@ import (
 	"github.com/coder/websocket"
 )
 
-// call is the chokepoint for every bridge RPC: per-tab serialization,
-// backpressure (ErrBridgeBusy past the deadline), and reconnect resilience
-// (wait out the MV3 gap; idempotent reads retry once). Order is tab lock THEN
-// in-flight slot, so a burst on one tab cannot starve other tabs of slots.
 func (b *Bridge) call(ctx context.Context, typ string, params map[string]any) (json.RawMessage, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -52,8 +48,7 @@ func (b *Bridge) call(ctx context.Context, typ string, params map[string]any) (j
 	if err == nil {
 		return raw, nil
 	}
-	// Retry an idempotent read once after a transient drop; getConn waits out the
-	// reconnect. Mutating ops never retry.
+
 	if isIdempotentType(typ) && isTransientTransportErr(err) {
 		b.retries.Add(1)
 		if raw2, err2 := b.dispatch(timeoutCtx, typ, params); err2 == nil {
@@ -63,8 +58,6 @@ func (b *Bridge) call(ctx context.Context, typ string, params map[string]any) (j
 	return raw, err
 }
 
-// dispatch performs one RPC round-trip. Write failures and disconnect-drained
-// replies are wrapped as errBridgeTransport so call can retry.
 func (b *Bridge) dispatch(ctx context.Context, typ string, params map[string]any) (json.RawMessage, error) {
 	dispatched := time.Now()
 	conn, err := b.getConn(ctx)
@@ -75,9 +68,7 @@ func (b *Bridge) dispatch(ctx context.Context, typ string, params map[string]any
 	id := strconv.FormatUint(b.nextID.Add(1), 10)
 	ch := make(chan response, 1)
 	b.mu.Lock()
-	// Revalidate generation and shutdown after getConn: Shutdown must not drain the
-	// map before this call adds itself back, and a replacement socket must not
-	// inherit a request written to the displaced one.
+
 	if b.shuttingDown {
 		b.mu.Unlock()
 		return nil, errBridgeShuttingDown
@@ -92,9 +83,7 @@ func (b *Bridge) dispatch(ctx context.Context, typ string, params map[string]any
 			return nil, browser.ErrBackgroundOwnershipLost
 		}
 	}
-	// An implicit isolation pin is valid only while the current generation still
-	// claims it: tab 42 may have closed and been reused during a reconnect.
-	// Checked under the lock that proves the generation. An explicit tab_id wins.
+
 	if !b.followFocus && browser.TabIDRequiresCurrentOwnership(ctx) {
 		if implicitTabID := browser.TabIDFromContext(ctx); implicitTabID != "" &&
 			(!b.agentPinKnown || strings.TrimSpace(b.active) != implicitTabID) {
@@ -113,8 +102,7 @@ func (b *Bridge) dispatch(ctx context.Context, typ string, params map[string]any
 		b.mu.Unlock()
 		return nil, err
 	}
-	// Independent write deadline, not ctx: cancellation mid-write tears down the
-	// shared socket.
+
 	writeCtx, writeCancel := context.WithTimeout(context.Background(), bridgeWriteTimeout)
 	b.writeMu.Lock()
 	err = conn.Write(writeCtx, websocket.MessageText, msg)
@@ -178,8 +166,6 @@ func describeBridgeRequest(typ string, params map[string]any) string {
 	return typ
 }
 
-// getConn returns the live socket, parking up to bridgeReconnectGrace while
-// the MV3 worker respawns; a brief conn==nil is normal.
 func (b *Bridge) getConn(ctx context.Context) (*websocket.Conn, error) {
 	b.mu.RLock()
 	conn := b.conn
@@ -216,8 +202,6 @@ func (b *Bridge) getConn(ctx context.Context) (*websocket.Conn, error) {
 	}
 }
 
-// acquireSlot takes an in-flight slot, returning ErrBridgeBusy if none frees by
-// the deadline. The returned release MUST be called. A nil sema means no cap.
 func (b *Bridge) acquireSlot(ctx context.Context) (func(), error) {
 	sema := b.sema
 	if sema == nil {
@@ -247,9 +231,6 @@ func (b *Bridge) acquireSlot(ctx context.Context) (func(), error) {
 
 type ctxKeySkipTabLock struct{}
 
-// withoutTabLock exempts the abandonable settle probe from the tab lock: an
-// orphaned probe holding it would block the next action on that tab. The
-// in-flight cap still applies.
 func withoutTabLock(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxKeySkipTabLock{}, true)
 }
@@ -259,8 +240,6 @@ func tabLockSkipped(ctx context.Context) bool {
 	return v
 }
 
-// lockTab serializes RPCs on the tab in params. Nil unlock when the op is not
-// tab-scoped or uses withoutTabLock; ErrBridgeBusy past the deadline.
 func (b *Bridge) lockTab(ctx context.Context, params map[string]any) (func(), error) {
 	if tabLockSkipped(ctx) {
 		return nil, nil
@@ -285,8 +264,6 @@ func (b *Bridge) lockTab(ctx context.Context, params map[string]any) (func(), er
 	}
 }
 
-// retainTabLock counts waiters as well as the holder, which keeps deletion safe
-// across a tab close followed by numeric-id reuse.
 func (b *Bridge) retainTabLock(key string) *tabLockEntry {
 	b.tabLocksMu.Lock()
 	defer b.tabLocksMu.Unlock()
@@ -299,8 +276,6 @@ func (b *Bridge) retainTabLock(key string) *tabLockEntry {
 	return entry
 }
 
-// releaseTabLock deletes only when the map still names this entry, or id reuse
-// could create two live locks for one tab.
 func (b *Bridge) releaseTabLock(key string, entry *tabLockEntry) {
 	b.tabLocksMu.Lock()
 	defer b.tabLocksMu.Unlock()
@@ -312,8 +287,6 @@ func (b *Bridge) releaseTabLock(key string, entry *tabLockEntry) {
 	}
 }
 
-// tabKeyFromParams normalizes tabId (int on cdp paths, string on focus/close).
-// Zero or absent means not tab-scoped.
 func tabKeyFromParams(params map[string]any) string {
 	if params == nil {
 		return ""

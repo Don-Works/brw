@@ -84,8 +84,7 @@ func (b *Bridge) verifyOpenedTabURL(ctx context.Context, tabID string) error {
 	return nil
 }
 
-// Navigate goes back, forward or reloads via history.back/forward and
-// location.reload, then returns a post-navigation observation.
+// Navigate goes back, forward or reloads via history.back/forward and location.reload, then returns a post-navigation observation.
 func (b *Bridge) Navigate(ctx context.Context, direction string) (browser.ActionResult, error) {
 	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
 		return browser.ActionResult{}, err
@@ -103,8 +102,7 @@ func (b *Bridge) Navigate(ctx context.Context, direction string) (browser.Action
 	return b.observeActionWithBefore(ctx, "navigated "+dir, before), nil
 }
 
-// NavigateTo navigates the active tab (no new tab) to url, waits for load and
-// returns a post-navigation observation.
+// NavigateTo navigates the active tab (no new tab) to url, waits for load and returns a post-navigation observation.
 func (b *Bridge) NavigateTo(ctx context.Context, url string) (browser.ActionResult, error) {
 	if err := b.pacer.BeforeAction(ctx, browser.TabIDFromContext(ctx)); err != nil {
 		return browser.ActionResult{}, err
@@ -114,10 +112,9 @@ func (b *Bridge) NavigateTo(ctx context.Context, url string) (browser.ActionResu
 	if err != nil {
 		return browser.ActionResult{}, fmt.Errorf("navigate_to: %w", err)
 	}
-	// Keep completion and observation on one tab if the user changes focus.
+
 	ctx = b.pinActiveTab(ctx)
-	// Arm before navigating: the in-page guard only beats page scripts on a
-	// document that has not loaded yet.
+
 	b.ensureContainment(ctx, b.contextTabID(ctx))
 	b.ensureWebMCP(ctx, b.contextTabID(ctx))
 	before := b.captureSemanticState(ctx)
@@ -146,27 +143,18 @@ type bridgeMainFrameState struct {
 	URL      string
 }
 
-// navigateToURLAndWait pre-arms the tab's trusted document identity, then waits
-// for that tab to commit a replacement. A generic "committed" wait would pass
-// on the still-interactive source page. The Page.navigate loader id covers
-// replacements; the webNavigation document id covers redirects and BFCache.
-// Fragment-only navigations keep both ids and finish when location.href
-// matches. An exact-current URL skips Page.navigate (reload is its own action).
 func (b *Bridge) navigateToURLAndWait(ctx context.Context, targetURL string) error {
 	tabID := b.contextTabID(ctx)
 	if tabID == "" {
 		return errors.New("navigate_to: no active tab available")
 	}
-	// Freeze every probe and command to this tab even in follow-focus mode.
+
 	navCtx := browser.WithTabID(ctx, tabID)
 	commitCtx, cancelCommit := context.WithTimeout(navCtx, navigationCommitTimeout)
 	defer cancelCommit()
 	beforeIdentity, identityErr := b.extensionDocumentIdentity(commitCtx)
 	beforeFrame, frameErr := b.mainFrameState(commitCtx, tabID)
 	if identityErr != nil || frameErr != nil {
-		// A tab whose only navigation became a download holds the initial empty
-		// document with no identity or loader; the zero boundary makes its first
-		// commit count as the change.
 		if !b.tabHasNoCommittedDocument(commitCtx, tabID) {
 			if identityErr != nil {
 				return fmt.Errorf("navigate_to: pre-arm main-document identity: %w", identityErr)
@@ -175,10 +163,7 @@ func (b *Bridge) navigateToURLAndWait(ctx context.Context, targetURL string) err
 		}
 		beforeIdentity, beforeFrame = extensionDocumentIdentityPayload{}, bridgeMainFrameState{}
 	}
-	// Chromium's Page.navigate to the exact current URL can return a loader that
-	// never commits (e.g. a service worker treats it as satisfied), burning the
-	// full timeout. Page.getFrameTree can hold a stale SPA URL, so compare
-	// location.href, and do it before Page.navigate.
+
 	currentURL, currentURLErr := b.mainDocumentURL(commitCtx, tabID)
 	if currentURLErr == nil && currentURL == targetURL {
 		beforeFrame.URL = currentURL
@@ -186,8 +171,7 @@ func (b *Bridge) navigateToURLAndWait(ctx context.Context, targetURL string) err
 			commitCtx, tabID, targetURL, beforeIdentity, beforeFrame, true,
 		)
 	}
-	// A speculative loader may be ignored only for a fragment-only transition; any
-	// path/query/origin change must commit the returned loader.
+
 	sameDocumentTarget := currentURLErr == nil && isExactFragmentTransition(currentURL, targetURL)
 
 	defer b.armInlineDocument(navCtx, tabID, targetURL)()
@@ -227,14 +211,10 @@ func (b *Bridge) navigateToURLAndWait(ctx context.Context, targetURL string) err
 		if frameErr == nil && identityErr == nil {
 			documentChanged := extensionNavigationDocumentChanged(beforeIdentity, identity)
 			loaderMatched := started.LoaderID != "" && frame.LoaderID == started.LoaderID
-			// Some SPAs update location in-document while Page.navigate returns a loader
-			// that never commits. Accept only with identity and frame/loader unchanged
-			// and location.href (not the frame-tree URL) at the target.
+
 			sameDocumentArrived := false
 			if sameDocumentTarget && !documentChanged && frame.ID == beforeFrame.ID && frame.LoaderID == beforeFrame.LoaderID {
 				if liveURL, err := b.mainDocumentURL(commitCtx, tabID); err == nil && liveURL == targetURL {
-					// A replacement can commit between the reads above and location.href;
-					// re-read both boundaries after the URL match.
 					confirmedFrame, frameConfirmErr := b.mainFrameState(commitCtx, tabID)
 					confirmedIdentity, identityConfirmErr := b.extensionDocumentIdentity(commitCtx)
 					if frameConfirmErr == nil && identityConfirmErr == nil &&
@@ -290,9 +270,6 @@ func navigationCommitWaitError(err error) error {
 	return err
 }
 
-// waitForAcceptedNavigationDestination runs readiness after a trusted
-// destination boundary is set, then proves the boundary held. requireExactURL
-// is for same-document and exact-current requests; replacements may redirect.
 func (b *Bridge) waitForAcceptedNavigationDestination(
 	ctx context.Context,
 	tabID, targetURL string,
@@ -300,11 +277,10 @@ func (b *Bridge) waitForAcceptedNavigationDestination(
 	acceptedFrame bridgeMainFrameState,
 	requireExactURL bool,
 ) error {
-	// A failed navigation commits chrome-error:// as a real replacement document.
 	if browser.IsErrorPageURL(acceptedFrame.URL) {
 		return b.navigationFailure(ctx, tabID, targetURL, acceptedFrame.URL, "")
 	}
-	// Check policy before running even the readiness predicate in the document.
+
 	if err := b.enforceFinalURL(ctx, acceptedFrame.URL); err != nil {
 		return fmt.Errorf("navigate_to: %w", err)
 	}
@@ -330,7 +306,6 @@ func (b *Bridge) waitForAcceptedNavigationDestination(
 	}
 	finalURL := finalFrame.URL
 	if requireExactURL {
-		// The frame-tree URL is not authoritative for a same-document SPA route.
 		finalURL, err = b.mainDocumentURL(ctx, tabID)
 		if err != nil {
 			return fmt.Errorf("navigate_to: verify exact destination URL: %w", err)
@@ -345,8 +320,6 @@ func (b *Bridge) waitForAcceptedNavigationDestination(
 	return nil
 }
 
-// mainDocumentURL bypasses evaluateRuntime, whose policy guard runs another
-// evaluation. CDP uses the main-frame context when none is given.
 func (b *Bridge) mainDocumentURL(ctx context.Context, tabID string) (string, error) {
 	raw, err := b.cdp(ctx, tabID, "Runtime.evaluate", map[string]any{
 		"expression":    "globalThis.location.href",
@@ -380,8 +353,7 @@ func extensionNavigationDocumentChanged(before, after extensionDocumentIdentityP
 	if before.TabID != after.TabID || before.DocumentID != after.DocumentID {
 		return true
 	}
-	// Epoch catches BFCache A->B->A within one worker; a worker restart resets it,
-	// so documentId is the cross-worker comparison.
+
 	return before.WorkerInstance == after.WorkerInstance && before.DocumentEpoch != after.DocumentEpoch
 }
 
@@ -409,8 +381,6 @@ func (b *Bridge) mainFrameState(ctx context.Context, tabID string) (bridgeMainFr
 	return bridgeMainFrameState{ID: frame.ID, LoaderID: frame.LoaderID, URL: frame.URL}, nil
 }
 
-// tabHasNoCommittedDocument reports the initial empty document, the state a
-// tab is left in when its only navigation became a download.
 func (b *Bridge) tabHasNoCommittedDocument(ctx context.Context, tabID string) bool {
 	liveURL, err := b.mainDocumentURL(ctx, tabID)
 	if err != nil {
@@ -419,10 +389,6 @@ func (b *Bridge) tabHasNoCommittedDocument(ctx context.Context, tabID string) bo
 	return liveURL == "about:blank"
 }
 
-// armInlineDocument asks the extension to render a download-shaped text
-// response from destination's origin as a page (browser.InlineDocumentHeaders).
-// Best effort: older extensions ignore it, or without url support pause every
-// document. The returned func is safe to call after ctx ends.
 func (b *Bridge) armInlineDocument(ctx context.Context, tabID, destination string) func() {
 	if strings.TrimSpace(tabID) == "" {
 		return func() {}
@@ -463,7 +429,6 @@ func (b *Bridge) navigateDirection(ctx context.Context, dir string) error {
 	}
 	var ok bool
 	if err := b.evaluate(ctx, expr, "", &ok); err != nil {
-		// Destroying the execution context is the expected outcome of navigation.
 		if isNavigationTeardownError(err) {
 			return nil
 		}

@@ -41,8 +41,7 @@ type bridgeActionBaseline struct {
 	Started time.Time
 	// Trace carries the action's structured operands to the recorder.
 	Trace browser.TraceEntry
-	// Elements is the pre-action list, so a ref resolves to what it was BEFORE the
-	// action (a label that flips on click would otherwise break replay guards).
+	// Elements is the pre-action list, so a ref resolves to what it was BEFORE the action (a label that flips on click would otherwise break replay guards).
 	Elements []snapshot.Element
 }
 
@@ -85,8 +84,6 @@ func (b *Bridge) observeActionWithBeforeAndTabs(ctx context.Context, message str
 	return result
 }
 
-// openedChildTabID claims only a tab Chrome says the acted-on tab opened:
-// another agent may open a tab concurrently, and it belongs to their lease.
 func openedChildTabID(tabs []browser.Tab, before map[string]bool, sourceTabID string) string {
 	for _, tab := range tabs {
 		if !before[tab.ID] && tab.ID != sourceTabID && tab.OpenerTabID == sourceTabID {
@@ -96,8 +93,6 @@ func openedChildTabID(tabs []browser.Tab, before map[string]bool, sourceTabID st
 	return ""
 }
 
-// traceOperands adds the ref's semantic identity and withholds the value of a
-// credential field: the trace is readable over HTTP and not lease-scoped.
 func (b *Bridge) traceOperands(before bridgeActionBaseline, entry browser.TraceEntry) browser.TraceEntry {
 	if entry.Ref == "" {
 		return entry
@@ -129,7 +124,6 @@ func (b *Bridge) captureSemanticState(ctx context.Context) bridgeActionBaseline 
 	return bridgeActionBaseline{State: &state, Started: started, Elements: snap.Elements}
 }
 
-// captureTabIDs returns current tab IDs, or nil on error (detection is best-effort).
 func (b *Bridge) captureTabIDs(ctx context.Context) map[string]bool {
 	tabs, err := b.ListTabs(ctx)
 	if err != nil {
@@ -176,7 +170,7 @@ func (b *Bridge) Observe(ctx context.Context) (browser.ObserveResult, error) {
 		Title:   snap.Title,
 		Focus:   focus,
 		Changed: changed,
-		// brw_route promises active routes are reported here on every transport.
+
 		ActiveRoutes: len(b.routes.list(tabID)),
 	}, nil
 }

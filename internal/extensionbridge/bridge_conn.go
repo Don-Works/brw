@@ -19,8 +19,6 @@ import (
 )
 
 func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
-	// coder/websocket treats an ABSENT Origin as same-origin, so a local non-browser
-	// client would pass; a web page cannot forge a chrome-extension:// Origin.
 	if !extensionOriginOK(r.Header.Get("Origin")) {
 		http.Error(w, "forbidden: a chrome-extension origin is required", http.StatusForbidden)
 		return
@@ -49,8 +47,6 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		log.Printf("WARNING: extension bridge accepting connections from any Chrome extension (chrome-extension://*); set a profile policy with bridge_extension_id to restrict")
 	}
 
-	// Authenticate before this connection goes live, so an unverified client can
-	// neither displace the real extension nor receive a command.
 	verifiedHello := hello{}
 	if b.authToken != "" {
 		h, herr := b.verifyHandshake(r.Context(), conn)
@@ -70,8 +66,7 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 		_ = conn.CloseNow()
 		return
 	}
-	// Flap guard: two profiles on one bridge displace each other forever. While
-	// holding with a live connection, reject the newcomer and extend the hold.
+
 	if b.conn != nil && now.Before(b.flapHoldUntil) {
 		b.flapHoldUntil = now.Add(flapHoldDuration)
 		b.mu.Unlock()
@@ -95,14 +90,11 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 			_ = conn.Close(websocket.StatusTryAgainLater, "extension flap: holding current connection")
 			return
 		}
-		// CloseNow, not Close: a graceful close waits up to 5s for the peer's ack while
-		// b.mu is held, freezing every dispatch and /status probe.
+
 		_ = b.conn.CloseNow()
-		// A logical response must not span connection generations: a new response
-		// could reuse the request id of a displaced partial one.
+
 		b.clearAllResponseChunksLocked()
-		// Pending RPCs survive a same-extension replace (a reconnecting MV3 worker
-		// can still answer them); a different identity never will, so fail them now.
+
 		if !sameExtensionIdentity(b.hello, verifiedHello) {
 			b.drainPendingLocked(replacedDrainReason)
 			b.resetProfileStateLocked()
@@ -111,17 +103,16 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 	b.conn = conn
 	b.backgroundTabs = make(map[string]*websocket.Conn)
 	b.hello = verifiedHello
-	// A new socket can be a restarted service worker that has lost every per-tab arm.
+
 	b.containment.reset()
 	b.webmcpArm.reset()
-	// Reconcile the pin before publishing via connReady: a tabs.onRemoved frame
-	// can be lost while the worker is down, so the hello is authoritative.
+
 	b.reconcileAgentPinLocked(verifiedHello)
 	b.connectedAt = now
 	b.lastSeenAt = now
 	b.disconnectedAt = time.Time{}
 	b.disconnectReason = ""
-	// Close-then-replace under mu so the channel is closed exactly once.
+
 	close(b.connReady)
 	b.connReady = make(chan struct{})
 	b.mu.Unlock()
@@ -133,7 +124,6 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 	}
 	b.recordBridgeUsage("bridge_connect", "ok", "", "", verifiedHello.Build)
 
-	// Ping so a half-open link (sleep, NAT timeout) is detected before a request times out.
 	pingCtx, pingCancel := context.WithCancel(r.Context())
 	pingFailure := make(chan struct{}, 1)
 	go b.keepAliveWithFailure(pingCtx, conn, pingKeepaliveInterval, pingFailure)
@@ -143,12 +133,11 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 	reason, expected := bridgeDisconnectReason(readErr)
 	select {
 	case <-pingFailure:
-		// The close frame that unblocked readLoop looks routine; the ping failure is not.
+
 		reason, expected = "keepalive ping failed", false
 	default:
 	}
-	// A replaced connection's read loop ends with "use of closed network
-	// connection"; that is routine MV3 lifecycle, not a disconnect.
+
 	if !b.releaseConn(conn, reason) {
 		return
 	}
@@ -161,8 +150,6 @@ func (b *Bridge) handleExtension(w http.ResponseWriter, r *http.Request) {
 	b.recordBridgeUsage("bridge_disconnect", "error", "transport", reason, verifiedHello.Build)
 }
 
-// bridgeDisconnectReason separates routine WebSocket lifecycle from transport
-// failure. Close reasons are canonical so peer close-frame text stays out of logs.
 func bridgeDisconnectReason(err error) (reason string, expected bool) {
 	if err == nil {
 		return "connection closed", true
@@ -182,9 +169,6 @@ func bridgeDisconnectReason(err error) (reason string, expected bool) {
 	return err.Error(), false
 }
 
-// releaseConn acts only when conn is still the ACTIVE connection: a displaced
-// conn's read loop must not drain the live connection's pending RPCs or mark
-// the bridge disconnected.
 func (b *Bridge) releaseConn(conn *websocket.Conn, reason string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -214,9 +198,6 @@ func (b *Bridge) recordBridgeUsage(operation, outcome, errorClass, errorMessage,
 	})
 }
 
-// recordTabGroupDegradation records a tab that opened but whose group
-// assignment Chromium refused. Only the capability class reaches the ledger,
-// never the title, URL or raw warning.
 func (b *Bridge) recordTabGroupDegradation(warning string) {
 	if strings.TrimSpace(warning) == "" {
 		return
@@ -227,7 +208,6 @@ func (b *Bridge) recordTabGroupDegradation(warning string) {
 	b.recordBridgeUsage("tab_group_assignment", "degraded", "capability", warning, build)
 }
 
-// drainPendingLocked fails every in-flight RPC. Caller holds b.mu.
 func (b *Bridge) drainPendingLocked(reason string) {
 	b.clearAllResponseChunksLocked()
 	for id, ch := range b.pending {
@@ -237,7 +217,6 @@ func (b *Bridge) drainPendingLocked(reason string) {
 	}
 }
 
-// clearResponseChunksLocked releases one partial response. Caller holds b.mu.
 func (b *Bridge) clearResponseChunksLocked(id string) {
 	assembly := b.responseChunks[id]
 	if assembly == nil {
@@ -250,7 +229,6 @@ func (b *Bridge) clearResponseChunksLocked(id string) {
 	delete(b.responseChunks, id)
 }
 
-// clearAllResponseChunksLocked releases every partial response. Caller holds b.mu.
 func (b *Bridge) clearAllResponseChunksLocked() {
 	clear(b.responseChunks)
 	b.responseChunkBytes = 0
@@ -269,8 +247,6 @@ func invalidChunkResponse(id string, err error) response {
 	}
 }
 
-// decodeResponseChunk validates one frame's own fields. Cross-frame checks run
-// under b.mu in consumeResponseChunk.
 func decodeResponseChunk(frame response) (index, count, total int, data []byte, err error) {
 	if frame.Encoding != "base64" {
 		return 0, 0, 0, nil, fmt.Errorf("unsupported encoding %q", frame.Encoding)
@@ -291,7 +267,7 @@ func decodeResponseChunk(frame response) (index, count, total int, data []byte, 
 	if frame.ChunkData == "" {
 		return 0, 0, 0, nil, errors.New("empty chunk data")
 	}
-	// Padded base64 overstates decoded bytes by at most two; reject before allocating.
+
 	if decodedUpperBound := base64.StdEncoding.DecodedLen(len(frame.ChunkData)); decodedUpperBound > total+2 {
 		return 0, 0, 0, nil, fmt.Errorf("encoded chunk cannot fit within total_bytes %d", total)
 	}
@@ -305,8 +281,6 @@ func decodeResponseChunk(frame response) (index, count, total int, data []byte, 
 	return index, count, total, data, nil
 }
 
-// rejectResponseChunk fails the awaiting RPC on a protocol fault. A stale socket
-// may not clear its replacement's state, and a cancelled request gets no reply.
 func (b *Bridge) rejectResponseChunk(conn *websocket.Conn, id string, err error) (response, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -320,11 +294,7 @@ func (b *Bridge) rejectResponseChunk(conn *websocket.Conn, id string, err error)
 	return invalidChunkResponse(id, err), true
 }
 
-// consumeResponseChunk accepts only a contiguous, consistent sequence for an
-// outstanding request and returns ready=true exactly once.
 func (b *Bridge) consumeResponseChunk(conn *websocket.Conn, frame response) (logical response, ready bool) {
-	// Skip decoding for a cancelled request; rechecked after decoding because
-	// dispatch may cancel meanwhile.
 	b.mu.Lock()
 	if b.conn != conn {
 		b.mu.Unlock()
@@ -437,10 +407,9 @@ func (b *Bridge) consumeResponseChunk(conn *websocket.Conn, frame response) (log
 	return logical, true
 }
 
-// deliverResponse claims the request atomically so no response is dispatched twice.
 func (b *Bridge) deliverResponse(conn *websocket.Conn, resp response) {
 	b.mu.Lock()
-	// A decoded response may wait on b.mu while its socket is replaced.
+
 	if b.conn != conn {
 		b.mu.Unlock()
 		return
@@ -455,8 +424,6 @@ func (b *Bridge) deliverResponse(conn *websocket.Conn, resp response) {
 	}
 }
 
-// handleDecodedFrame gates every decoded frame on connection generation.
-// Response paths recheck when claiming, since chunk decoding can yield between.
 func (b *Bridge) handleDecodedFrame(conn *websocket.Conn, resp response) {
 	b.mu.Lock()
 	if b.conn != conn {
@@ -466,16 +433,14 @@ func (b *Bridge) handleDecodedFrame(conn *websocket.Conn, resp response) {
 	b.lastSeenAt = time.Now().UTC()
 	if resp.Type == "hello" {
 		h := resp.Hello
-		h.Token = "" // never store or echo the handshake secret
+		h.Token = ""
 		b.hello = h
-		// Tokenless embedders go live before the hello; treat a later hello as the pin boundary.
+
 		b.reconcileAgentPinLocked(h)
 		b.mu.Unlock()
 		return
 	}
 	if resp.Type == "active_tab" {
-		// active_tab is the user's focus hint. In isolation b.active must track the
-		// tab brw owns, so it is honoured only in follow-focus mode.
 		if resp.TabID != 0 && b.followFocus {
 			b.active = strconv.Itoa(resp.TabID)
 		}
@@ -508,11 +473,6 @@ func (b *Bridge) handleDecodedFrame(conn *websocket.Conn, resp response) {
 	b.deliverResponse(conn, resp)
 }
 
-// resetProfileStateLocked discards profile-scoped state: another profile can
-// reuse tab ids and download GUIDs. Not called on a same-extension reconnect.
-//
-// Caller holds b.mu. Lock order: b.mu -> observeMu -> downloadsMu ->
-// emulationMu; never acquire b.mu while holding a subordinate lock.
 func (b *Bridge) resetProfileStateLocked() {
 	b.active = ""
 	b.agentPinKnown = false
@@ -535,10 +495,6 @@ func (b *Bridge) resetProfileStateLocked() {
 	b.emulationMu.Unlock()
 }
 
-// reconcileAgentPinLocked makes the new connection's owned-tab pin
-// authoritative, so a lost tab_removed cannot leave b.active on a tab id Chrome
-// has reused. A missing AgentTabID clears ownership. Caller holds b.mu (lock
-// order as resetProfileStateLocked).
 func (b *Bridge) reconcileAgentPinLocked(h hello) {
 	b.agentPinKnown = true
 	if b.followFocus {
@@ -556,16 +512,13 @@ func (b *Bridge) reconcileAgentPinLocked(h hello) {
 	if previous != "" {
 		b.invalidateTabStateLocked(previous)
 	}
-	// Chrome may have reused next already; a changed pin is a new ownership epoch.
+
 	if next != "" {
 		b.invalidateTabStateLocked(next)
 	}
 	b.active = next
 }
 
-// invalidateTabStateLocked forgets everything keyed by a closed tab, since
-// Chrome reuses numeric tab ids. Caller holds b.mu (lock order as
-// resetProfileStateLocked).
 func (b *Bridge) invalidateTabStateLocked(tabID string) {
 	tabID = strings.TrimSpace(tabID)
 	if tabID == "" {
@@ -584,8 +537,7 @@ func (b *Bridge) invalidateTabStateLocked(tabID string) {
 	b.emulationMu.Lock()
 	delete(b.emulationStates, tabID)
 	b.emulationMu.Unlock()
-	// The extension drops a closed tab's rules; a stale copy would be re-pushed
-	// onto a replacement tab that reuses the id.
+
 	b.routes.set(tabID, nil)
 }
 
@@ -595,9 +547,6 @@ func (b *Bridge) invalidateTabState(tabID string) {
 	b.mu.Unlock()
 }
 
-// sameExtensionIdentity compares source, workspace, profile and label only, so
-// an upgraded extension is the same identity. Identical configs collide; the
-// flap guard handles that.
 func sameExtensionIdentity(a, b hello) bool {
 	return a.Source == b.Source &&
 		a.Workspace == b.Workspace &&
@@ -610,14 +559,10 @@ const (
 	pingTimeout           = 10 * time.Second
 )
 
-// keepAlive closes conn when a ping fails, which unblocks readLoop. It stops
-// once conn is no longer the active connection.
 func (b *Bridge) keepAlive(ctx context.Context, conn *websocket.Conn, interval time.Duration) {
 	b.keepAliveWithFailure(ctx, conn, interval, nil)
 }
 
-// keepAliveWithFailure reports a failure before closing so the teardown can tell
-// our own StatusGoingAway from the peer's.
 func (b *Bridge) keepAliveWithFailure(ctx context.Context, conn *websocket.Conn, interval time.Duration, failures chan<- struct{}) {
 	if interval <= 0 {
 		interval = pingKeepaliveInterval
@@ -655,10 +600,6 @@ func (b *Bridge) keepAliveWithFailure(ctx context.Context, conn *websocket.Conn,
 	}
 }
 
-// verifyHandshake reads the first frame, which must be a hello, within
-// handshakeTimeout. A wrong token is always rejected; a missing one when
-// requireToken is set. A refused hello is returned with the error (token
-// zeroed) so its reported endpoints can be recorded.
 func (b *Bridge) verifyHandshake(ctx context.Context, conn *websocket.Conn) (hello, error) {
 	verifyCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
@@ -670,7 +611,7 @@ func (b *Bridge) verifyHandshake(ctx context.Context, conn *websocket.Conn) (hel
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return hello{}, fmt.Errorf("invalid hello frame: %w", err)
 	}
-	// Zero the secret at once: rejection paths return resp.Hello to /status.
+
 	presented := resp.Hello.Token
 	resp.Hello.Token = ""
 	if resp.Type != "hello" {
@@ -678,8 +619,7 @@ func (b *Bridge) verifyHandshake(ctx context.Context, conn *websocket.Conn) (hel
 	}
 	switch {
 	case presented == "":
-		// A local process can forge an Origin header, so without a token the bridge
-		// authenticates nothing.
+
 		if b.requireToken {
 			return resp.Hello, errors.New("missing handshake token: the extension must present the per-launch token from /status (set BRW_BRIDGE_ALLOW_TOKENLESS=1 only for a pre-0.2.0 extension)")
 		}
@@ -700,8 +640,6 @@ func (b *Bridge) readLoop(ctx context.Context, conn *websocket.Conn) error {
 		}
 		var resp response
 		if err := json.Unmarshal(data, &resp); err != nil {
-			// A chunk envelope can be valid JSON yet fail typed decoding. Recover its
-			// routing header so that RPC fails now instead of at its deadline.
 			var header struct {
 				ID   string `json:"id"`
 				Type string `json:"type"`

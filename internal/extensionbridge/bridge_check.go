@@ -9,9 +9,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// Check runs the shared checkbox expression through the bridge's own Evaluate.
-// Setting a checkbox is a page action, not debugger-session state, so it works
-// on the signed-in transport.
 var _ browser.CheckController = (*Bridge)(nil)
 
 func (b *Bridge) Check(ctx context.Context, opts browser.CheckOptions) (browser.ActionResult, error) {

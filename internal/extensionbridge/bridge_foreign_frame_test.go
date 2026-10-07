@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -52,14 +54,9 @@ func (f *foreignFrameExtension) transport() map[string]any {
 }
 
 func (f *foreignFrameExtension) refusal(tabID int) string {
-	return "foreign_extension_frame: Chrome refuses brw's debugger for tab " + itoa(tabID) +
+	return "foreign_extension_frame: Chrome refuses brw's debugger for tab " + strconv.Itoa(tabID) +
 		" while the page embeds a frame from another extension (extension " + testForeignExtensionID + " at " + testForeignFrameURL +
 		"). Chrome said: Cannot access a chrome-extension:// URL of different extension"
-}
-
-func itoa(n int) string {
-	raw, _ := json.Marshal(n)
-	return string(raw)
 }
 
 func (f *foreignFrameExtension) serve(ctx context.Context, conn *websocket.Conn) {
@@ -269,5 +266,19 @@ func TestForeignExtensionFrameRefusalIsANamedError(t *testing.T) {
 	}
 	if calls := ext.calls(); calls != 1 {
 		t.Fatalf("the refusal was sent %d CDP calls; it is not transient and must not be retried", calls)
+	}
+}
+
+func TestPageTransportSkippedExtensionIDsAreDeterministic(t *testing.T) {
+	note := &pageTransportNote{blockedBy: map[string]foreignExtensionFrame{
+		"one":   {ExtensionID: "b"},
+		"two":   {ExtensionID: "a"},
+		"three": {ExtensionID: "b"},
+	}, skipped: 3}
+	for range 32 {
+		ids := note.apply(nil)["skipped_extension_ids"].([]string)
+		if !slices.Equal(ids, []string{"a", "b"}) {
+			t.Fatalf("skipped extension IDs vary with map iteration: %v", ids)
+		}
 	}
 }

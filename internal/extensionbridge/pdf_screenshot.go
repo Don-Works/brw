@@ -15,10 +15,6 @@ import (
 	"strings"
 )
 
-// rasterizeBridgePDF converts the first page of Chrome's print-renderer fallback
-// to PNG, then applies the original viewport clip. The print renderer is only
-// used when Chrome has no compositor surface (for example a locked macOS user
-// session); normal screenshots never start a subprocess.
 func rasterizeBridgePDF(ctx context.Context, pdfData []byte, params map[string]any) ([]byte, error) {
 	if len(pdfData) == 0 {
 		return nil, fmt.Errorf("screenshot PDF fallback returned no data")

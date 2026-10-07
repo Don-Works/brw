@@ -7,9 +7,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// findActuator exposes the extension transport's raw element primitives — the
-// same ones the equivalent single-verb batch/plan steps call, so a find_act step
-// behaves exactly like a find followed by that step on this transport too.
 func (b *Bridge) findActuator() browser.FindActuator {
 	return browser.FindActuator{
 		Click: b.clickRef,

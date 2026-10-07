@@ -16,8 +16,7 @@ func (b *Bridge) finishObservedTrace(before bridgeActionBaseline, message string
 	}
 	result.DurationMS = time.Since(before.Started).Milliseconds()
 	entry := bridgeTraceEntry(message)
-	// Call-site operands win over parsing the message. Copy the whole struct:
-	// a field-by-field copy silently drops fields added to TraceEntry later.
+
 	if before.Trace.Action != "" {
 		entry = before.Trace
 	}
@@ -42,8 +41,6 @@ func (b *Bridge) appendTrace(entry browser.TraceEntry) {
 	b.traceMu.Unlock()
 }
 
-// recordObservation drops an entry with no tab id, as the direct-CDP Manager
-// does: an unscoped entry is visible to every caller of the shared daemon.
 func (b *Bridge) recordObservation(tabID, action, text string, start time.Time, err error) {
 	if strings.TrimSpace(tabID) == "" {
 		return
