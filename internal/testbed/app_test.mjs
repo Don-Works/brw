@@ -4,6 +4,8 @@ import vm from "node:vm";
 
 const origin = new URL(process.argv[2]);
 assert.equal(origin.hostname, "127.0.0.1");
+const framesEnabled = process.argv[3] !== "none";
+if (!framesEnabled) origin.searchParams.set("frames", "none");
 const calls = [], tools = [], elements = new Map();
 const runtime = { registerTool(tool) { tools.push(tool); } };
 function element(id = "") {
@@ -11,7 +13,7 @@ function element(id = "") {
   const node = { id, dataset: {}, value: "", textContent: "", hidden: false, children: [], listeners,
     addEventListener(kind, fn) { (listeners[kind] ||= []).push(fn); }, setAttribute() {},
     replaceChildren(...children) { this.children = children; }, append(child) { this.children.push(child); },
-    focus() {}, querySelector() { return element(); }, attachShadow() { return element(); },
+    focus() {}, remove() { this.removed = true; }, querySelector() { return element(); }, attachShadow() { return element(); },
     getContext() { return new Proxy({}, { get: (_, name) => () => {} }); },
     tBodies: [{ insertRow: () => ({ insertCell: () => ({}) }) }]
   };
@@ -20,8 +22,10 @@ function element(id = "") {
 const page = fs.readFileSync("web/index.html", "utf8");
 for (const [, id] of page.matchAll(/\bid="([^"]+)"/g)) elements.set(id, element(id));
 elements.get("choice-list").children = [element(), element(), element()];
-const document = { modelContext: runtime, getElementById: id => { assert.ok(elements.has(id), `missing HTML id ${id}`); return elements.get(id); },
-  createElement: () => element(), querySelector: () => element(), dispatchEvent() {} };
+const frames = [elements.get("same-frame"), elements.get("cross-frame"), element("opaque-frame")];
+assert.equal((page.match(/<iframe\b/g) || []).length, frames.length);
+const document = { modelContext: runtime, getElementById: id => { assert.ok(elements.has(id) && !elements.get(id).removed, `missing HTML id ${id}`); return elements.get(id); },
+  createElement: () => element(), querySelector: () => element(), querySelectorAll: selector => { assert.equal(selector, "iframe"); return frames.filter(frame => !frame.removed); }, dispatchEvent() {} };
 class WebSocket { static OPEN = 1; readyState = 1; send() {} close() {} }
 class EventSource { close() {} addEventListener() {} }
 const context = vm.createContext({ document, navigator: {}, window: { addEventListener() {} }, location: origin, URL, URLSearchParams, WebSocket, EventSource,
@@ -35,6 +39,8 @@ assert.equal(tools[0].annotations.readOnlyHint, true);
 assert.equal(tools[1].annotations.readOnlyHint, false);
 assert.equal(tools[1].annotations.destructiveHint, true);
 assert.equal(typeof tools[1].execute, "function");
+assert.equal(frames.filter(frame => !frame.removed).length, framesEnabled ? 3 : 0);
+if (framesEnabled) { assert.match(frames[0].src, /^\/frame\?version=1$/); assert.match(frames[1].src, /\/frame\?version=1$/); }
 const before = await fetch(new URL("/api/state", origin)).then(response => response.json());
 const report = await tools[0].execute({});
 assert.equal(report.site_code, before.reading.facts.site_code);
@@ -53,6 +59,9 @@ const oldButton = elements.get("action-slot").children[0];
 const reset = await fetch(new URL("/api/reset", origin), { method: "POST", body: JSON.stringify({ seed: 17, chaos: 3, max_events: 12 }) }).then(response => response.json());
 context.resetState = reset;
 vm.runInContext("initialize(resetState)", context);
+vm.runInContext("renderView({...resetState, frame_version: 2}, 'frame')", context);
+assert.equal(frames.filter(frame => !frame.removed).length, framesEnabled ? 3 : 0);
+if (framesEnabled) { assert.match(frames[0].src, /version=2$/); assert.match(frames[1].src, /version=2$/); }
 await oldButton.onclick();
 const final = await fetch(new URL("/api/state", origin)).then(response => response.json());
 assert.equal(final.action_counts["stable-action"] || 0, 0, "old node committed into a reset run with the same epoch");
