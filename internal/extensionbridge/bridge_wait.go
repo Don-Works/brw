@@ -39,6 +39,9 @@ func (b *Bridge) WaitForOutcome(ctx context.Context, condition string, timeout t
 	}
 	started := time.Now()
 	finish := func(outcome browser.WaitOutcome, err error) (browser.WaitOutcome, error) {
+		if guardErr := b.guardCurrentURL(ctx); guardErr != nil {
+			return browser.WaitOutcome{}, guardErr
+		}
 		outcome.Condition = condition
 		outcome.OK = err == nil
 		outcome.WaitedMS = time.Since(started).Milliseconds()
@@ -141,6 +144,9 @@ func (b *Bridge) waitForDownloadPolled(ctx context.Context, match string, deadli
 			}
 			if baseline[entry.GUID] || !matches(entry) {
 				continue
+			}
+			if err := browser.CheckDownloadSource(ctx, entry.URL); err != nil {
+				return false, err
 			}
 			if entry.State == "completed" {
 				return true, nil
