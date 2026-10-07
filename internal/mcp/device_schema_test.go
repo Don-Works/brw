@@ -7,11 +7,6 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 )
 
-// TestEmulateDeviceSchemaAdvertisesEveryPreset stops the tool schema drifting
-// from the presets brw actually registers. Models lean on the description text
-// at least as much as the enum, and listing a subset there taught agents to
-// guess unlisted model names — brw_emulate_device was the worst-performing
-// tool in the usage ledger at a 31.6% error rate, almost all of it bad names.
 func TestEmulateDeviceSchemaAdvertisesEveryPreset(t *testing.T) {
 	var device map[string]any
 	for _, tl := range tools() {
@@ -26,7 +21,6 @@ func TestEmulateDeviceSchemaAdvertisesEveryPreset(t *testing.T) {
 		t.Fatal("brw_emulate_device has no device property")
 	}
 
-	// stringEnumSchema stores []string; tolerate []any in case that changes.
 	enum := map[string]bool{}
 	switch values := device["enum"].(type) {
 	case []string:

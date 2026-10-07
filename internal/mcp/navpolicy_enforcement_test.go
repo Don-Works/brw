@@ -10,8 +10,6 @@ import (
 	"github.com/Don-Works/brw/internal/navpolicy"
 )
 
-// callOpen drives a single brw_open through a server (optionally policy-gated)
-// and returns the raw JSON-RPC response line.
 func callOpen(t *testing.T, policy *navpolicy.Policy, url string) string {
 	t.Helper()
 	ctrl := &recordingController{}
@@ -68,9 +66,6 @@ func TestNoPolicyAllowsEverything(t *testing.T) {
 	}
 }
 
-// callNavTool drives any single navigation tool through a policy-gated server so
-// every navigation entrypoint — not just brw_open — is proven to honor the
-// guardrail and can't silently drift.
 func callNavTool(t *testing.T, policy *navpolicy.Policy, tool string, args map[string]any) string {
 	t.Helper()
 	ctrl := &recordingController{}
@@ -89,9 +84,6 @@ func callNavTool(t *testing.T, policy *navpolicy.Policy, tool string, args map[s
 	return out.String()
 }
 
-// TestNavPolicyGatesEveryNavEntrypoint proves the allowlist confines every tool
-// that can steer the browser or make the daemon fetch a URL, including the new
-// brw_navigate_to and the brw_upload_file url source (SSRF reach).
 func TestNavPolicyGatesEveryNavEntrypoint(t *testing.T) {
 	policy := navpolicy.Parse("corp.example.com", "")
 	cases := []struct {
@@ -110,17 +102,12 @@ func TestNavPolicyGatesEveryNavEntrypoint(t *testing.T) {
 			t.Errorf("%s with %v must be denied under the allowlist, got: %s", c.tool, c.args, resp)
 		}
 	}
-	// A permitted destination must still pass through navigate_to.
+
 	if resp := callNavTool(t, policy, "brw_navigate_to", map[string]any{"url": "https://corp.example.com/app"}); strings.Contains(resp, `"isError":true`) {
 		t.Fatalf("allowlisted navigate_to must pass, got: %s", resp)
 	}
 }
 
-// TestNavPolicyGatesPlanAndBatchOpenSteps proves brw_plan and brw_batch cannot be
-// used to sidestep the navigation guardrail by wrapping a blocked destination in
-// an "open" step — the bypass that let a plainly-blocked domain through a
-// different tool. A blocked step must fail the call before any step runs; a step
-// to an allowlisted domain must pass.
 func TestNavPolicyGatesPlanAndBatchOpenSteps(t *testing.T) {
 	policy := navpolicy.Parse("corp.example.com", "")
 	for _, tool := range []string{"brw_plan", "brw_batch"} {
@@ -191,8 +178,6 @@ func TestNavPolicyCanonicalizesExactMCPNavigationTarget(t *testing.T) {
 	}
 }
 
-// TestWebMCPToolsAdvertised confirms the WebMCP tools are present in tools/list so
-// agents can discover them.
 func TestWebMCPToolsAdvertised(t *testing.T) {
 	names := map[string]bool{}
 	for _, tl := range tools() {

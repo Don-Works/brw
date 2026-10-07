@@ -18,13 +18,6 @@ import (
 	"github.com/Don-Works/brw/internal/recipe"
 )
 
-// The routing rule asserted here is the same one baseline_routing_test.go
-// covers, but against the two providers brw actually ships rather than a stand-
-// in: a directory of private recipes, and an HTTPS provider. A capability that
-// routes correctly past a test double and not past the real DirectoryProvider
-// is the failure this duplicated coverage exists to catch.
-
-// privateRecipe is one valid recipe for a provider to own.
 func privateRecipe() recipe.Recipe {
 	visible := true
 	return recipe.Recipe{
@@ -43,13 +36,10 @@ func privateRecipe() recipe.Recipe {
 	}
 }
 
-// httpsProviderFixture is the provider side of the baseline wire format, kept
-// in memory. It answers the five routes an HTTPProvider calls.
 type httpsProviderFixture struct {
 	mu    sync.Mutex
 	owned string
-	// ownedOrigin is the site this provider's one recipe covers. It is the
-	// other half of the routing question a real provider answers.
+
 	ownedOrigin string
 	stored      map[string]json.RawMessage
 	handler     http.Handler
@@ -93,8 +83,7 @@ func newHTTPSProviderFixture(t *testing.T, ownedDigest string) *httpsProviderFix
 		answer(w, map[string]any{
 			"owns":        owns,
 			"owns_origin": onOwnedOrigin,
-			// The provider holds one recipe, so the recipe it owns visits
-			// exactly the origin that recipe declares.
+
 			"covers_page": owns && onOwnedOrigin,
 		})
 	})
@@ -173,7 +162,6 @@ func (f *httpsProviderFixture) count() int {
 	return len(f.stored)
 }
 
-// providerBaselineCount reports how many baselines a shipped provider holds.
 type providerUnderTest struct {
 	name  string
 	store recipe.BaselineStore
@@ -224,22 +212,17 @@ func shippedProviders(t *testing.T, ownedDigest string) []providerUnderTest {
 	}
 }
 
-// TestBaselineRoutingAgainstBothShippedProviders records one baseline for a
-// recipe each provider owns and one for a public fixture it does not, and
-// checks where each landed on disk rather than what the result called it.
 func TestBaselineRoutingAgainstBothShippedProviders(t *testing.T) {
 	ownedDigest, err := recipe.Digest(privateRecipe())
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Not a recipe any provider holds: the public-fixture case.
+
 	const publicDigest = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 
 	for _, provider := range shippedProviders(t, ownedDigest) {
 		t.Run(provider.name, func(t *testing.T) {
-			// On the page the owned recipe declares. The destination is the
-			// pair, so a capture of any other page under this digest is a
-			// refusal rather than a write to either store.
+
 			controller := &pageController{label: "Download invoices", encoding: "jpeg", url: privateRecipe().Origins[0] + "/invoices"}
 			s := baselineServer(t, controller)
 			s.SetRecipeBaselines(provider.store)
@@ -256,8 +239,6 @@ func TestBaselineRoutingAgainstBothShippedProviders(t *testing.T) {
 				t.Fatalf("%d private baselines were written to the local root", got)
 			}
 
-			// The public fixture is captured where it lives: a site no recipe of
-			// this provider's declares.
 			controller.url = "https://fixtures.example.test/report"
 			public := callBaselineTool(t, s, fmt.Sprintf(`{"action":"update","recipe_digest":%q,"step_index":0}`, publicDigest))
 			if status, _ := public["status"].(string); status != baseline.StatusRecorded {
@@ -270,10 +251,6 @@ func TestBaselineRoutingAgainstBothShippedProviders(t *testing.T) {
 				t.Fatalf("%d baselines under the local root, want the public fixture's one", got)
 			}
 
-			// Both are readable again from where they were put, which is what
-			// makes each a gate rather than a write. Each is checked from the
-			// page it was recorded on, because a check is routed by the pair
-			// exactly as the update was.
 			for _, gate := range []struct{ digest, pageURL string }{
 				{ownedDigest, privateRecipe().Origins[0] + "/invoices"},
 				{publicDigest, "https://fixtures.example.test/report"},
@@ -285,9 +262,6 @@ func TestBaselineRoutingAgainstBothShippedProviders(t *testing.T) {
 				}
 			}
 
-			// And the capture the digest alone would have aimed at the provider:
-			// the same owned recipe, on a page it never visits. Refused, and
-			// neither store grows.
 			controller.url = "https://mail.unrelated.test/inbox/secret-thread"
 			args := fmt.Sprintf(`{"action":"update","recipe_digest":%q,"step_index":0}`, ownedDigest)
 			result, rpcErr := s.callTool(context.Background(), baselineToolName, []byte(args))

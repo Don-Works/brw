@@ -2256,17 +2256,8 @@ func ToolResultPayload(value any) (any, error) {
 }
 
 func isJSONObject(data []byte) bool {
-	for _, b := range data {
-		switch b {
-		case ' ', '\t', '\n', '\r':
-			continue
-		case '{':
-			return true
-		default:
-			return false
-		}
-	}
-	return false
+	data = bytes.TrimSpace(data)
+	return len(data) > 0 && data[0] == '{'
 }
 
 func toolOK(err error) (any, *rpcError) {

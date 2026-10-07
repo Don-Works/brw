@@ -18,17 +18,12 @@ import (
 	"github.com/Don-Works/brw/internal/usagelog"
 )
 
-// Low-entropy and obviously fabricated. The whole test is a search for this
-// literal, so it must not look like a real credential.
 const (
 	leakFixtureValue     = "fixture-login-value-one"
 	leakFixtureReference = "work/login"
 	leakFixtureOrigin    = "https://login.example.test"
 )
 
-// credentialFillSurface is the browser side. It keeps the typed value behind a
-// mutex-guarded field the test reads directly, because here the assertion is
-// about the MCP transcript and the ledger, not about the daemon's heap.
 type credentialFillSurface struct {
 	mu      sync.Mutex
 	typed   []string
@@ -130,9 +125,6 @@ func credentialLeakRegistry(t *testing.T) *plugin.Registry {
 	return registry
 }
 
-// Acceptance criterion 2, over the wire rather than over an internal API: a
-// login completes and the value appears in neither the MCP transcript the
-// client receives nor the operational ledger the daemon writes.
 func TestCredentialNeverEntersTheMCPTranscriptOrTheUsageLedger(t *testing.T) {
 	value := credentialLoginRecipe()
 	digest, err := recipe.Digest(value)
@@ -176,7 +168,6 @@ func TestCredentialNeverEntersTheMCPTranscriptOrTheUsageLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The flow has to have worked, or the searches below prove nothing.
 	if got := surface.filled(); len(got) != 1 || got[0] != leakFixtureValue {
 		t.Fatalf("the browser received %q, want the resolved credential", got)
 	}
@@ -197,16 +188,12 @@ func TestCredentialNeverEntersTheMCPTranscriptOrTheUsageLedger(t *testing.T) {
 	if bytes.Contains(recorded, []byte(leakFixtureValue)) {
 		t.Fatalf("the usage ledger carries the credential: %s", recorded)
 	}
-	// The reference name is not secret, but it names an operator's vault layout
-	// and the ledger is metadata-only, so it has no business being there either.
+
 	if bytes.Contains(recorded, []byte(leakFixtureReference)) {
 		t.Fatalf("the usage ledger carries the credential reference: %s", recorded)
 	}
 }
 
-// The realistic way a credential reaches an MCP client is not a field brw
-// chose to include: it is a transport quoting the text it could not type, into
-// an error brw forwards. This drives that path over the tool call.
 func TestAChattyFillFailureDoesNotPutTheCredentialInTheMCPResponse(t *testing.T) {
 	value := credentialLoginRecipe()
 	digest, err := recipe.Digest(value)
@@ -232,8 +219,7 @@ func TestAChattyFillFailureDoesNotPutTheCredentialInTheMCPResponse(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The transport really did see the value, so the search below is not over an
-	// error that never had one to leak.
+
 	if got := surface.filled(); len(got) != 1 || got[0] != leakFixtureValue {
 		t.Fatalf("the browser received %q", got)
 	}
@@ -245,8 +231,6 @@ func TestAChattyFillFailureDoesNotPutTheCredentialInTheMCPResponse(t *testing.T)
 	}
 }
 
-// Criterion 3 over the wire: with the provider revoked, the tool call fails
-// with the named error instead of degrading to an empty field.
 func TestRevokedProviderFailsTheRecipeToolCallByName(t *testing.T) {
 	value := credentialLoginRecipe()
 	digest, err := recipe.Digest(value)

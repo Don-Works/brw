@@ -13,16 +13,8 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// pageToolStubID is shaped like a real invocation id (<document nonce>-<seq>) so
-// it survives validatePageToolID the way one minted in a page would.
 const pageToolStubID = "0a1b2c3d4e5f6071-3"
 
-// pageToolController answers the page-tool expressions the way a document does:
-// the start script mints an id and reports the tool running, and the poll script
-// keeps reporting running until settleAfter polls have gone by. A controller that
-// answers anything else makes InvokePageTool return at the start report, which is
-// why a detach assertion against a generic stub can never tell detached from
-// waited — it never reaches the branch.
 type pageToolController struct {
 	recordingController
 
@@ -31,21 +23,13 @@ type pageToolController struct {
 	labels      []browser.TraceLabel
 	polls       int
 
-	// settleAfter is how many polls report running before one reports done;
-	// zero keeps the invocation running forever.
 	settleAfter int
 	result      any
 	activeTab   string
 }
 
-// ActiveTabID is the capability EVERY transport has: it reports the tab an
-// untargeted page call lands in and pins nothing. This is the direct-CDP and
-// --upstream-http shape.
 func (c *pageToolController) ActiveTabID(ctx context.Context) (string, error) {
-	// A real lookup is a round trip — the direct-CDP Manager lists tabs, the
-	// proxy asks the upstream daemon — so both fail on a dead context, which is
-	// what makes the report's tab lookup outlive the caller's cancellation
-	// observable here.
+
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -55,9 +39,6 @@ func (c *pageToolController) ActiveTabID(ctx context.Context) (string, error) {
 	return c.activeTab, nil
 }
 
-// bridgePageToolController adds the capability only the extension bridge has:
-// resolving the active tab once per tool call and PINNING it into the context,
-// so every report downstream reads it from there.
 type bridgePageToolController struct {
 	pageToolController
 }
@@ -109,9 +90,6 @@ func (c *pageToolController) firstLabel() browser.TraceLabel {
 	return c.labels[0]
 }
 
-// The tool surface is the only way an agent reaches detached invocation, so each
-// verb has to dispatch to the page expression it claims to — a handler wired to
-// the wrong builder would poll for a result with a cancel script.
 func TestPageToolVerbsDispatchTheirOwnExpressions(t *testing.T) {
 	for _, tc := range []struct {
 		tool string
@@ -146,10 +124,6 @@ func TestPageToolVerbsDispatchTheirOwnExpressions(t *testing.T) {
 		})
 	}
 
-	// A detached invoke starts the tool and stops there: one evaluate, and it is
-	// the invoke script. The controller reports the invocation running and never
-	// settles it, so a build that ignored detach would keep polling to timeout_ms
-	// and record more than one.
 	ctrl := &pageToolController{}
 	srv := New(ctrl)
 	if _, rpcErr := srv.callTool(context.Background(), "brw_call_page_tool",
@@ -174,8 +148,6 @@ func TestPageToolVerbsDispatchTheirOwnExpressions(t *testing.T) {
 	}
 }
 
-// validate_input defaults on, and turning it off has to actually reach the page
-// script rather than being read and dropped.
 func TestPageToolValidationIsOnUnlessTurnedOff(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -207,8 +179,6 @@ func TestPageToolValidationIsOnUnlessTurnedOff(t *testing.T) {
 	}
 }
 
-// The input cap is refused at the tool boundary with a named error, and nothing
-// is evaluated: an oversized payload never becomes an expression at all.
 func TestOversizedPageToolArgumentsNeverReachTheTransport(t *testing.T) {
 	ctrl := &interactionController{}
 	srv := New(ctrl)
@@ -233,10 +203,6 @@ func TestOversizedPageToolArgumentsNeverReachTheTransport(t *testing.T) {
 	}
 }
 
-// An invocation id is a handle on work running in a page; a tool that accepted
-// an empty or malformed one would report "lost" for what is really a typo. The
-// only spelling of the parameter is the advertised one: an undocumented alias is
-// a second contract nothing keeps in step with the schema.
 func TestPageToolResultRejectsUnusableInvocationIDs(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -266,10 +232,6 @@ func TestPageToolResultRejectsUnusableInvocationIDs(t *testing.T) {
 	}
 }
 
-// timeout_ms is clamped rather than trusted: a caller asking for an hour would
-// otherwise pin an agent turn to a page that may never answer. A negative value
-// has no single sensible reading — no wait, or the default wait, are thirty
-// seconds apart — so it is refused instead of guessed at.
 func TestPageToolTimeoutClamping(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -301,9 +263,6 @@ func TestPageToolTimeoutClamping(t *testing.T) {
 	}
 }
 
-// A refused timeout has to be refused at the boundary, not turned into a wait of
-// some other length: a negative timeout_ms once meant "block for the default 30
-// seconds" on one verb and "one cheap poll" on the other.
 func TestNegativePageToolTimeoutIsRefusedBeforeDispatch(t *testing.T) {
 	for _, tc := range []struct {
 		tool string
@@ -329,15 +288,6 @@ func TestNegativePageToolTimeoutIsRefusedBeforeDispatch(t *testing.T) {
 	}
 }
 
-// A poll walks only the windows of the tab it lands in, and a page tool that
-// opens a tab moves the active one. The report has to name the tab it was
-// started in, because the agent has nothing else to pass back.
-//
-// Run against both transport shapes, because they reach the tab by different
-// routes and the promise is made without qualification in four places. Only the
-// extension bridge pins the tab into the context; direct CDP and the proxy pin
-// nothing, so a stub that grants the bridge's pinning capability is green on a
-// transport that carried no tab at all.
 func TestPageToolReportNamesTheTabToPollBackInto(t *testing.T) {
 	transports := []struct {
 		name string
@@ -408,10 +358,6 @@ func TestPageToolReportNamesTheTabToPollBackInto(t *testing.T) {
 	}
 }
 
-// The wait that was cut short is the report whose only value is staying
-// addressable, so it is also the one that most needs to name a tab. Looking the
-// tab up on the caller's cancelled context would drop it from exactly that
-// report.
 func TestAnInterruptedPageToolReportStillNamesItsTab(t *testing.T) {
 	ctrl := &pageToolController{activeTab: "tab-7"}
 	srv := New(ctrl)
@@ -431,10 +377,6 @@ func TestAnInterruptedPageToolReportStillNamesItsTab(t *testing.T) {
 	}
 }
 
-// A page tool's return value is written by the page, so its size is the page's
-// choice. It goes through the same windowing as brw_evaluate rather than being
-// serialised whole into the agent's turn — and a finished result stays
-// collectable for five minutes, so an unbounded one could be re-dumped at will.
 func TestPageToolResultIsBoundedLikeEvaluate(t *testing.T) {
 	huge := strings.Repeat("y", 100000)
 
@@ -483,10 +425,6 @@ func TestPageToolResultIsBoundedLikeEvaluate(t *testing.T) {
 	})
 }
 
-// Every poll is a full Evaluate, and a wait at the ten-minute cap runs close to
-// six hundred of them. Recorded as raw evaluate rows they would evict the whole
-// 500-entry trace ring, so each one is labelled by the verb that ran it and
-// collapses into a single row.
 func TestPageToolEvaluatesAreLabelledForTheTrace(t *testing.T) {
 	for _, tc := range []struct {
 		tool string
@@ -522,10 +460,6 @@ func TestPageToolEvaluatesAreLabelledForTheTrace(t *testing.T) {
 	}
 }
 
-// A wait can end without the invocation ending: the request is cancelled, the
-// tab closes, an evaluate fails. The tool description promises the invocation is
-// never abandoned, only stopped being waited on, so the id has to come back in
-// the report rather than only inside an error string.
 func TestInterruptedPageToolWaitKeepsTheInvocationAddressable(t *testing.T) {
 	ctrl := &pageToolController{activeTab: "tab-7"}
 	srv := New(ctrl)

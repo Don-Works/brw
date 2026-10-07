@@ -19,9 +19,6 @@ import (
 	"github.com/Don-Works/brw/internal/devtools/axe"
 )
 
-// auditFixture fails three axe rules on purpose. #bbbbbb on white is about
-// 1.9:1 where 4.5:1 is required, the image has no alt text, and the button has
-// no accessible name.
 const auditFixture = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>MCP audit fixture</title></head><body>
 <h1>MCP audit fixture</h1>
@@ -30,15 +27,8 @@ const auditFixture = `<!doctype html><html lang="en"><head><meta charset="utf-8"
 <button id="no-name"></button>
 </body></html>`
 
-// auditSummaryCeiling is what "bounded" has to mean to be worth anything: the
-// summary must stay small enough to read in a model's context regardless of how
-// large the audit was. The full report for this fixture is already several
-// times this.
 const auditSummaryCeiling = 8 << 10
 
-// newLiveAuditServer wires the real pieces the audit tool needs — a headless
-// Chrome, a real artifact store on disk, and the MCP server in front of both —
-// because what this file is testing is the handoff between them.
 func newLiveAuditServer(t *testing.T) (*Server, string) {
 	t.Helper()
 	chromePath, err := cdp.FindChrome("")
@@ -87,10 +77,6 @@ func newLiveAuditServer(t *testing.T) (*Server, string) {
 	return server, fixture.URL
 }
 
-// TestAccessibilityAuditPutsTheReportInAnArtifactAndAnswersWithASummary is the
-// whole arrangement in one test: real page, real engine, real store. The tool
-// answer must be small and must not contain the report; the artifact must
-// contain it and be readable through the artifact tools.
 func TestAccessibilityAuditPutsTheReportInAnArtifactAndAnswersWithASummary(t *testing.T) {
 	server, fixtureURL := newLiveAuditServer(t)
 
@@ -140,8 +126,6 @@ func TestAccessibilityAuditPutsTheReportInAnArtifactAndAnswersWithASummary(t *te
 		t.Errorf("stored report is %d bytes and the summary is %d; the report should be the larger document", int(size), len(encoded))
 	}
 
-	// The handle has to be usable through the ordinary artifact tools, or it is
-	// just a string. Reading it back is the only proof of that.
 	chunk := callToolJSON(t, server, "brw_artifact_read",
 		fmt.Sprintf(`{"artifact_id":%q,"max_bytes":%d}`, artifactID, artifact.MaxReadBytes))
 	text, _ := chunk["text"].(string)
@@ -151,17 +135,12 @@ func TestAccessibilityAuditPutsTheReportInAnArtifactAndAnswersWithASummary(t *te
 	if !strings.Contains(text, `"brw_ref"`) {
 		t.Error("the stored report carries no brw_ref annotations")
 	}
-	// The rules the summary had no room for still have to be in the report;
-	// otherwise the artifact is a copy of the summary and buys nothing.
+
 	if !strings.Contains(text, "image-alt") {
 		t.Error("the stored report does not mention the missing alt text")
 	}
 }
 
-// TestAccessibilityAuditAnswersWithItsPageEffectsAndHonoursATTL: the audit is
-// read-shaped but it injects an engine and stores the raw HTML of every failing
-// element. Both are the caller's business, and neither is visible from the
-// counts.
 func TestAccessibilityAuditAnswersWithItsPageEffectsAndHonoursATTL(t *testing.T) {
 	server, _ := newLiveAuditServer(t)
 
@@ -173,8 +152,6 @@ func TestAccessibilityAuditAnswersWithItsPageEffectsAndHonoursATTL(t *testing.T)
 		}
 	}
 
-	// A caller on a page holding real data has to be able to bound how long the
-	// report survives. The store here keeps artifacts for an hour.
 	bounded := callToolJSON(t, server, "brw_a11y_audit", `{"rules":["color-contrast"],"ttl_seconds":120}`)
 	handle, _ := bounded["artifact"].(map[string]any)
 	if handle == nil {
@@ -190,9 +167,6 @@ func TestAccessibilityAuditAnswersWithItsPageEffectsAndHonoursATTL(t *testing.T)
 	}
 }
 
-// TestAccessibilityAuditSaysSoWhenThereIsNowhereToStoreTheReport: a daemon run
-// with --artifact-dir off still has to answer, and has to say the full report
-// is gone rather than imply the summary is everything axe found.
 func TestAccessibilityAuditSaysSoWhenThereIsNowhereToStoreTheReport(t *testing.T) {
 	server, _ := newLiveAuditServer(t)
 	server.SetArtifactAPI(nil)
@@ -210,9 +184,6 @@ func TestAccessibilityAuditSaysSoWhenThereIsNowhereToStoreTheReport(t *testing.T
 	}
 }
 
-// TestVitalsAndHighlightDispatchThroughTheToolSurface covers the other two
-// tools end to end over the MCP call path, including the reversibility the
-// highlight tool promises in its description.
 func TestVitalsAndHighlightDispatchThroughTheToolSurface(t *testing.T) {
 	server, _ := newLiveAuditServer(t)
 
@@ -255,8 +226,6 @@ func TestVitalsAndHighlightDispatchThroughTheToolSurface(t *testing.T) {
 	}
 }
 
-// TestDevtoolsToolsAreAdvertisedWithWhatTheyPromise pins the three catalogue
-// entries and the specific claims an agent is entitled to rely on.
 func TestDevtoolsToolsAreAdvertisedWithWhatTheyPromise(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -267,17 +236,14 @@ func TestDevtoolsToolsAreAdvertisedWithWhatTheyPromise(t *testing.T) {
 			name:       "brw_vitals",
 			properties: []string{"settle_ms", "tab_id"},
 			claims: []string{"LCP", "CLS", "INP", "TTFB",
-				// Both are things the code now does and an agent would
-				// otherwise have to discover from a surprising number.
+
 				"interactions counts distinct interactions", "named in unavailable"},
 		},
 		{
 			name:       "brw_a11y_audit",
 			properties: []string{"tags", "rules", "include_passes", "max_rules", "max_refs", "ttl_seconds", "tab_id"},
 			claims: []string{"artifact", "embedded in the brw binary", "fetches nothing over the network",
-				// The audit installs half a megabyte of engine and leaves it
-				// there, and stores the raw HTML of every failing element.
-				// Both were advertised away and are now stated.
+
 				"NOT effect-free", "left installed as window.axe", "no redaction"},
 		},
 		{
@@ -304,9 +270,6 @@ func TestDevtoolsToolsAreAdvertisedWithWhatTheyPromise(t *testing.T) {
 		})
 	}
 
-	// The tag list belongs to one place. Burying it in prose while the sibling
-	// colour field is generated from HighlightColorNames() is how the two
-	// drift, and how AuditTagNames ends up exported and called from nowhere.
 	tagsSchema, _ := toolProperties(t, "brw_a11y_audit")["tags"].(map[string]any)
 	tagsDescription, _ := tagsSchema["description"].(string)
 	for _, tag := range devtools.AuditTagNames() {
@@ -314,15 +277,11 @@ func TestDevtoolsToolsAreAdvertisedWithWhatTheyPromise(t *testing.T) {
 			t.Errorf("the tags schema does not name %q: %q", tag, tagsDescription)
 		}
 	}
-	// Examples, not an enum: the run forwards any tag it is given, so a closed
-	// list in the schema would advertise a restriction the code does not have.
+
 	if _, closed := tagsSchema["enum"]; closed {
 		t.Error("the tags schema declares an enum, but the audit forwards any tag it is given")
 	}
 
-	// Every tool in the catalogue has to be reachable from the switch; these
-	// three went in from a separate file, which is exactly how a tool gets
-	// advertised and never wired.
 	for _, name := range []string{"brw_vitals", "brw_a11y_audit", "brw_highlight"} {
 		result, rpcErr := New(&fakeController{}).callTool(context.Background(), name, json.RawMessage(`{}`))
 		if rpcErr != nil {

@@ -41,9 +41,6 @@ func TestConsoleBufferOnlyErrorsRetainsTheRest(t *testing.T) {
 		t.Fatal("unbounded result reported as truncated")
 	}
 
-	// The backend drains its own buffer on every read, so anything a filter
-	// skips is gone forever unless brw retains it. A later, wider read must
-	// still see the log lines this one filtered out.
 	rest, _, _ := buf.take(consoleQuery{}, nil)
 	if want := []string{"boot", "ready"}; len(rest) != 2 || rest[0].Text != want[0] || rest[1].Text != want[1] {
 		t.Fatalf("filtered-out messages were destroyed: got %v, want %v", texts(rest), want)
@@ -228,8 +225,6 @@ func TestRepeatActionStopsOnFirstError(t *testing.T) {
 	}
 }
 
-// A cancelled request must stop a long repeat rather than hold the tab for the
-// full count.
 func TestRepeatActionHonoursCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := 0

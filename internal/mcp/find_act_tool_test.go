@@ -13,8 +13,6 @@ func findFixtureElement(ref, role, name string) snapshot.Element {
 	return snapshot.Element{Ref: ref, Role: role, Name: name, Visible: true, InViewport: true, Source: []string{"dom"}}
 }
 
-// brw_find with an action locates and acts in one call. Without an action it is
-// still the read-only search it has always been.
 func TestFindWithAnActionLocatesAndActs(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -42,8 +40,7 @@ func TestFindWithAnActionLocatesAndActs(t *testing.T) {
 			wantActed: []string{"find:Email/", "fill:e7=fixture-user"},
 		},
 		{
-			// The safety property: several matches must stop the action, list the
-			// rivals, and actuate nothing.
+
 			name: "several matches refuse and actuate nothing",
 			elements: []snapshot.Element{
 				findFixtureElement("e4", "button", "Add to cart"),
@@ -55,17 +52,14 @@ func TestFindWithAnActionLocatesAndActs(t *testing.T) {
 		},
 		{
 			name: "no match is an error, not an empty success",
-			// Empty rather than nil: nil means "this test does not care which
-			// elements the page has" and gets the default fixture list.
+
 			elements:  []snapshot.Element{},
 			args:      `{"query":"Checkout","action":"click"}`,
 			wantActed: []string{"find:Checkout/"},
 			wantErr:   "no element matches",
 		},
 		{
-			// A caller cannot narrow its way past the rule: the locate-and-act
-			// search is built with its own limit, so limit:1 never turns two
-			// rivals into a unique match.
+
 			name: "a caller-supplied limit cannot manufacture uniqueness",
 			elements: []snapshot.Element{
 				findFixtureElement("e4", "button", "Add to cart"),
@@ -79,7 +73,7 @@ func TestFindWithAnActionLocatesAndActs(t *testing.T) {
 			name:     "exact resolves the ambiguity",
 			elements: []snapshot.Element{findFixtureElement("e4", "button", "Add to cart"), findFixtureElement("e9", "button", "Add to wishlist")},
 			args:     `{"query":"Add to cart","action":"click","exact":true}`,
-			// The search itself is unchanged; exact narrows what came back.
+
 			wantActed: []string{"find:Add to cart/", "click:e4"},
 		},
 		{
@@ -124,11 +118,6 @@ func TestFindWithAnActionLocatesAndActs(t *testing.T) {
 	}
 }
 
-// The standalone brw_find-with-action decides whether to ACT from the element
-// list it searched, so it resolves through the transport's LIVE search. A
-// transport whose plain Find may answer from a snapshot cache would otherwise
-// let the exactly-one-match rule confirm a uniqueness the page no longer has —
-// here the cached page has one "Add" button and the live page has two.
 func TestFindWithAnActionResolvesFromTheLiveSearch(t *testing.T) {
 	controller := &observeController{
 		findElements: []snapshot.Element{findFixtureElement("e4", "button", "Add to cart")},
@@ -157,8 +146,6 @@ func TestFindWithAnActionResolvesFromTheLiveSearch(t *testing.T) {
 		}
 	}
 
-	// A read-only find is unchanged: it may still answer from the cache, because
-	// nothing is being decided from it.
 	readOnly := &observeController{
 		findElements: []snapshot.Element{findFixtureElement("e4", "button", "Add to cart")},
 		liveElements: []snapshot.Element{findFixtureElement("e9", "button", "Add to wishlist")},
@@ -172,9 +159,6 @@ func TestFindWithAnActionResolvesFromTheLiveSearch(t *testing.T) {
 	}
 }
 
-// The locate-and-act response has to name the element it picked: the caller
-// never saw the search result, so without it a follow-up would have to search
-// again — which is the round trip this feature exists to remove.
 func TestFindWithAnActionReportsTheMatchedElement(t *testing.T) {
 	controller := &observeController{findElements: []snapshot.Element{findFixtureElement("e4", "button", "Add to cart")}}
 	response := toolText(t, observeCallTool(t, controller, "brw_find", `{"query":"Add to cart","action":"click"}`))
@@ -197,7 +181,6 @@ func TestFindWithAnActionReportsTheMatchedElement(t *testing.T) {
 		t.Fatalf("locate-and-act did not carry the post-action observation: %s", response)
 	}
 
-	// observe reaches the observation half without touching the match.
 	trimmed := toolText(t, observeCallTool(t, controller, "brw_find", `{"query":"Add to cart","action":"click","observe":"none"}`))
 	if !strings.Contains(trimmed, `"ref":"e4"`) {
 		t.Fatalf("observe=none dropped the matched element: %s", trimmed)

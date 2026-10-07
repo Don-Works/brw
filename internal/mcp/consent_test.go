@@ -21,24 +21,16 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// consentController is a recordingController that also reports an open tab, so
-// the act-scope gate has a live page origin to check against, and records
-// whether the underlying action ran.
 type consentController struct {
 	recordingController
 	tabURL      string
 	clicked     bool
 	findResults []snapshot.Element
-	// tabURLAfterStep moves the tab once a sequence step has run, which is what
-	// a click on a cross-site link does to the steps that follow it.
+
 	tabURLAfterStep map[int]string
 	ranSteps        int
 }
 
-// ExecuteBatch runs the steps the way the real runners do: ask the installed
-// per-step consent gate BEFORE each step, and stop on a refusal. Without this
-// the fake would pass a batch the real runner refuses, and what this file exists
-// to test - that the server installs the gate at all - would be untested.
 func (c *consentController) ExecuteBatch(ctx context.Context, steps []browser.BatchStep) (browser.BatchResult, error) {
 	result := browser.BatchResult{OK: true, TabID: "tab1"}
 	for index, step := range steps {
@@ -69,7 +61,6 @@ func (c *consentController) Find(context.Context, snapshot.FindOptions) (snapsho
 	return snapshot.FindResult{Elements: c.findResults}, nil
 }
 
-// fixtureConsentKey is an obviously fabricated MAC key for tests.
 var fixtureConsentKey = []byte("fixture-mcp-consent-key-abcdefghi")
 
 func newConsentServer(t *testing.T, ctrl browser.Controller, admin siteconsent.AdminConfig) (*Server, *siteconsent.Guard) {
@@ -108,8 +99,6 @@ func callConsentTool(t *testing.T, srv *Server, tool string, args map[string]any
 	return string(encoded)
 }
 
-// TestConsentRefusesUngrantedNavigationAndNamesTheScope proves the gate runs
-// before dispatch: the controller must not have been asked to open anything.
 func TestConsentRefusesUngrantedNavigationAndNamesTheScope(t *testing.T) {
 	ctrl := &consentController{tabURL: "https://start.test/"}
 	srv, guard := newConsentServer(t, ctrl, siteconsent.AdminConfig{})
@@ -137,9 +126,6 @@ func TestConsentRefusesUngrantedNavigationAndNamesTheScope(t *testing.T) {
 	}
 }
 
-// TestConsentGatesEveryNavigationEntrypoint keeps the table honest: a new
-// URL-opening tool that is not in consentRules shows up here as a pass when it
-// should be a refusal.
 func TestConsentGatesEveryNavigationEntrypoint(t *testing.T) {
 	cases := []struct {
 		tool string
@@ -169,9 +155,6 @@ func TestConsentGatesEveryNavigationEntrypoint(t *testing.T) {
 	}
 }
 
-// TestConsentActScopeUsesTheLivePageOrigin proves act is checked against the tab
-// the action lands on, not the URL the agent last asked for, and that a read
-// grant is not enough to act.
 func TestConsentActScopeUsesTheLivePageOrigin(t *testing.T) {
 	ctrl := &consentController{tabURL: "https://shop.test/cart"}
 	srv, guard := newConsentServer(t, ctrl, siteconsent.AdminConfig{})
@@ -202,10 +185,8 @@ func TestConsentActScopeUsesTheLivePageOrigin(t *testing.T) {
 	}
 }
 
-// TestConsentActFailsClosedWhenTheOriginCannotBeResolved proves the gate does not
-// degrade to "allow" when the transport cannot say where the tab is.
 func TestConsentActFailsClosedWhenTheOriginCannotBeResolved(t *testing.T) {
-	ctrl := &recordingController{} // ListTabs returns no tabs at all
+	ctrl := &recordingController{}
 	srv, _ := newConsentServer(t, ctrl, siteconsent.AdminConfig{})
 	response := callConsentTool(t, srv, "brw_click", map[string]any{"ref": "e1"})
 	if !strings.Contains(response, `"isError":true`) {
@@ -216,8 +197,6 @@ func TestConsentActFailsClosedWhenTheOriginCannotBeResolved(t *testing.T) {
 	}
 }
 
-// TestConsentRevocationAppliesToTheNextCall is the no-restart half of acceptance
-// criterion 1, driven through the MCP surface.
 func TestConsentRevocationAppliesToTheNextCall(t *testing.T) {
 	ctrl := &consentController{tabURL: "https://shop.test/cart"}
 	srv, guard := newConsentServer(t, ctrl, siteconsent.AdminConfig{})
@@ -239,9 +218,6 @@ func TestConsentRevocationAppliesToTheNextCall(t *testing.T) {
 	}
 }
 
-// TestHighRiskActionRefusedNonInteractively is acceptance criterion 4 at the tool
-// surface: a purchase-shaped click is refused, not auto-approved, and an
-// ordinary one is untouched.
 func TestHighRiskActionRefusedNonInteractively(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -278,9 +254,6 @@ func TestHighRiskActionRefusedNonInteractively(t *testing.T) {
 	}
 }
 
-// TestConfirmActionsClassifiesARefFromTheSnapshotBrwReturned proves the label
-// path: a click addressed only by ref is classified from the accessible name brw
-// itself reported for that ref.
 func TestConfirmActionsClassifiesARefFromTheSnapshotBrwReturned(t *testing.T) {
 	ctrl := &consentController{
 		tabURL:      "https://shop.test/cart",
@@ -291,7 +264,6 @@ func TestConfirmActionsClassifiesARefFromTheSnapshotBrwReturned(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Before the find, brw has never seen e7, so there is no label to classify.
 	if response := callConsentTool(t, srv, "brw_click", map[string]any{"ref": "e7"}); strings.Contains(response, `"isError":true`) {
 		t.Fatalf("an unknown ref must not be refused on a label brw never saw: %s", response)
 	}
@@ -311,7 +283,6 @@ func TestConfirmActionsClassifiesARefFromTheSnapshotBrwReturned(t *testing.T) {
 	}
 }
 
-// TestConsentDisabledLeavesToolsUngated is the opt-in guarantee.
 func TestConsentDisabledLeavesToolsUngated(t *testing.T) {
 	ctrl := &consentController{tabURL: "https://shop.test/cart"}
 	srv := New(ctrl)
@@ -323,7 +294,6 @@ func TestConsentDisabledLeavesToolsUngated(t *testing.T) {
 	}
 }
 
-// TestConsentRulesNameRealTools stops the table drifting from the catalogue.
 func TestConsentRulesNameRealTools(t *testing.T) {
 	known := map[string]bool{}
 	for _, tl := range tools() {
@@ -338,21 +308,12 @@ func TestConsentRulesNameRealTools(t *testing.T) {
 	}
 }
 
-// destinationArgumentNames are the argument names a tool could name a network
-// destination in. The list is deliberately wider than the gate's own
-// DestinationField set: the point of reading it off the published schemas is to
-// catch a tool whose destination argument the gate never thought of, which is
-// exactly how brw_authenticate shipped gated on "url" while it is addressed by
-// "origin".
 var destinationArgumentNames = []string{
 	"url", "urls", "origin", "origins", "domain", "domains", "host", "hostname",
 	"endpoint", "target", "uri", "href", "address", "site", "link", "server",
 	"base_url", "src", "source", "path", "pattern",
 }
 
-// notADestination names the tool/argument pairs whose name matches but whose
-// value is not somewhere brw goes, with the reason. An entry here is a claim a
-// reviewer can check against the tool's own schema text.
 var notADestination = map[string]string{
 	"brw_pushstate/url":            "a same-document History API change, which loads no document and cannot leave the origin",
 	"brw_recipe_search/origin":     "filters the recipe index; it is not a site brw reaches",
@@ -370,9 +331,6 @@ var notADestination = map[string]string{
 	"brw_scroll/target":            "names an element ref or CSS selector, not a destination; ScrollTo resolves it in the page already loaded",
 }
 
-// destinationValue is the un-granted value to drive one argument with, chosen
-// from the argument's declared type and name so the tool's own decoder accepts
-// it.
 func destinationValue(field string, schema map[string]any) any {
 	if kind, _ := schema["type"].(string); kind == "array" {
 		return []any{map[string]any{"origin": "https://ungranted.test", "headers": map[string]any{"X-Test": "1"}}}
@@ -384,16 +342,6 @@ func destinationValue(field string, schema map[string]any) any {
 	return "https://ungranted.test/x"
 }
 
-// TestEveryDestinationArgumentIsRefused walks the catalogue for tools that take
-// a destination argument - whatever that tool calls it - and drives each one at
-// an un-granted origin through the real call path.
-//
-// The argument NAMES come from the published schemas rather than from a list
-// written here, so a tool addressed by "target" or "endpoint" is picked up the
-// day it ships instead of the day somebody remembers to add the name. Asserting
-// BEHAVIOUR rather than table membership is the other half: the membership
-// version of this test passed for brw_authenticate and brw_cookies while both
-// were ungated in their real argument shape.
 func TestEveryDestinationArgumentIsRefused(t *testing.T) {
 	covered := 0
 	for _, tl := range tools() {
@@ -413,8 +361,7 @@ func TestEveryDestinationArgumentIsRefused(t *testing.T) {
 			t.Run(name+"/"+field, func(t *testing.T) {
 				ctrl := &consentController{tabURL: "https://start.test/"}
 				srv, guard := newConsentServer(t, ctrl, siteconsent.AdminConfig{})
-				// The tab brw is on is granted, so the only thing that can
-				// refuse is the destination in the argument.
+
 				if _, err := guard.Allow(siteconsent.GrantOptions{Origin: "https://start.test", Scope: siteconsent.ScopeAct, Actor: "fixture-user"}); err != nil {
 					t.Fatal(err)
 				}
@@ -431,8 +378,7 @@ func TestEveryDestinationArgumentIsRefused(t *testing.T) {
 	if covered == 0 {
 		t.Fatal("no tool in the catalogue declares a destination argument; the schemas this test reads have moved")
 	}
-	// An exemption for a tool or argument that no longer exists is an argument
-	// nobody is making any more, and it would silently cover a future one.
+
 	known := map[string]bool{}
 	for _, tl := range tools() {
 		name, _ := tl["name"].(string)
@@ -449,14 +395,6 @@ func TestEveryDestinationArgumentIsRefused(t *testing.T) {
 	}
 }
 
-// TestUngatedToolsReachNoSite is the behavioural half of the ungated table.
-//
-// A written reason is something a reviewer argues with; this is the part a test
-// can settle. Every tool brw declares ungated is checked against what its own
-// handler does: if it calls a controller method that a GATED tool calls - the
-// reads, the actions, the navigations - then it reaches a site, and the reason
-// it carries is wrong whatever it says. Both halves of the comparison are read
-// out of the source, so neither is a list that can be forgotten.
 func TestUngatedToolsReachNoSite(t *testing.T) {
 	bodies := toolCaseBodies(t)
 	controller := controllerMethodNames(t)
@@ -486,8 +424,6 @@ func TestUngatedToolsReachNoSite(t *testing.T) {
 	}
 }
 
-// toolCaseBodies returns the body of each tool's case in callTool's dispatch
-// switch, keyed by tool name.
 func toolCaseBodies(t *testing.T) map[string][]ast.Stmt {
 	t.Helper()
 	parsed, err := parser.ParseFile(token.NewFileSet(), "server.go", nil, 0)
@@ -504,10 +440,7 @@ func toolCaseBodies(t *testing.T) map[string][]ast.Stmt {
 	if dispatch == nil {
 		t.Fatal("server.go declares no callTool; the dispatch this test reads has moved")
 	}
-	// A case label may be a constant rather than a literal — brw_tools and
-	// brw_skill are — and a scan that saw only literals would report those tools
-	// as having no handler at all, which is a guard stating the opposite of the
-	// truth.
+
 	constants := packageStringConstants(t)
 	out := map[string][]ast.Stmt{}
 	ast.Inspect(dispatch, func(node ast.Node) bool {
@@ -531,8 +464,6 @@ func toolCaseBodies(t *testing.T) map[string][]ast.Stmt {
 	return out
 }
 
-// toolCaseName resolves one case label to the tool name it dispatches: a string
-// literal, or a package-level string constant naming one.
 func toolCaseName(expr ast.Expr, constants map[string]string) (string, bool) {
 	switch typed := expr.(type) {
 	case *ast.BasicLit:
@@ -549,10 +480,6 @@ func toolCaseName(expr ast.Expr, constants map[string]string) (string, bool) {
 	}
 }
 
-// packageStringConstants collects every package-level string constant in this
-// package. The constants a case label uses are declared beside their handlers
-// (skillToolName in skill.go, discoveryToolName in disclosure.go), not in
-// server.go, so resolving them means reading the whole package.
 func packageStringConstants(t *testing.T) map[string]string {
 	t.Helper()
 	entries, err := os.ReadDir(".")
@@ -597,8 +524,6 @@ func packageStringConstants(t *testing.T) map[string]string {
 	return out
 }
 
-// controllerMethodNames reads the browser.Controller interface, which is the
-// whole of what a tool handler can ask the browser to do.
 func controllerMethodNames(t *testing.T) map[string]bool {
 	t.Helper()
 	parsed, err := parser.ParseFile(token.NewFileSet(), "../browser/controller.go", nil, 0)
@@ -628,8 +553,6 @@ func controllerMethodNames(t *testing.T) map[string]bool {
 	return out
 }
 
-// calledMethods returns every method name called through a selector anywhere in
-// a statement list.
 func calledMethods(body []ast.Stmt) map[string]bool {
 	out := map[string]bool{}
 	for _, stmt := range body {
@@ -647,14 +570,9 @@ func calledMethods(body []ast.Stmt) map[string]bool {
 	return out
 }
 
-// TestEveryToolIsClassifiedForConsent makes the table exhaustive by
-// construction. A new tool is either gated or deliberately ungated with the
-// reason; one that is neither fails here instead of shipping with no rule.
 func TestEveryToolIsClassifiedForConsent(t *testing.T) {
 	known := map[string]bool{}
-	// discoveryTool() is advertised by the auto profile and callable under every
-	// profile, but it is not in tools(), so a scan of tools() alone left the one
-	// tool every default session starts with classified by nobody.
+
 	for _, tl := range append(tools(), discoveryTool()) {
 		name, _ := tl["name"].(string)
 		known[name] = true
@@ -672,13 +590,6 @@ func TestEveryToolIsClassifiedForConsent(t *testing.T) {
 	}
 }
 
-// TestReadURLIsGatedOnEveryRedirectHop drives the no-browser read against real
-// servers: the URL the call names is granted, and it answers with a 302 to one
-// that is not.
-//
-// A grant is for an origin, not for a request. Gating only the first URL made a
-// read grant on any site a read of every site it chose to point at, which is
-// exactly the redirected document the read scope says it covers.
 func TestReadURLIsGatedOnEveryRedirectHop(t *testing.T) {
 	const secretBody = "<html><body><p>internal quarterly statement</p></body></html>"
 	var secretHits int64
@@ -713,8 +624,6 @@ func TestReadURLIsGatedOnEveryRedirectHop(t *testing.T) {
 		t.Fatalf("the un-granted origin was fetched %d times", got)
 	}
 
-	// Granting the destination lets the same chain through, so this is a gate
-	// and not a refusal of redirects.
 	if _, err := guard.Allow(siteconsent.GrantOptions{Origin: secret.URL, Scope: siteconsent.ScopeRead, Actor: "fixture-user"}); err != nil {
 		t.Fatal(err)
 	}
@@ -727,17 +636,9 @@ func TestReadURLIsGatedOnEveryRedirectHop(t *testing.T) {
 	}
 }
 
-// TestASequenceIsRegatedInsideTheRunner proves the MCP surface installs the
-// per-step gate and that it survives the hop into the controller.
-//
-// The gate itself is tested in internal/siteconsent and the runners' use of it
-// in internal/browser. What can only be tested here is the wiring: a server that
-// gates the call and then dispatches without installing the step gate leaves
-// every step after the first navigation decided by the arguments alone.
 func TestASequenceIsRegatedInsideTheRunner(t *testing.T) {
 	ctrl := &consentController{tabURL: "https://start.test/"}
-	// The runner lands somewhere else after the first step, which is what a
-	// click on a cross-site link does.
+
 	ctrl.tabURLAfterStep = map[int]string{1: "https://elsewhere.test/inbox"}
 	srv, guard := newConsentServer(t, ctrl, siteconsent.AdminConfig{})
 	if _, err := guard.Allow(siteconsent.GrantOptions{Origin: "https://start.test", Scope: siteconsent.ScopeAct, Actor: "fixture-user"}); err != nil {
@@ -759,8 +660,7 @@ func TestASequenceIsRegatedInsideTheRunner(t *testing.T) {
 	if _, err := guard.Allow(siteconsent.GrantOptions{Origin: "https://elsewhere.test", Scope: siteconsent.ScopeRead, Actor: "fixture-user"}); err != nil {
 		t.Fatal(err)
 	}
-	// The failed batch left the tab where the click took it; a fresh call starts
-	// from the page the agent is on.
+
 	ctrl.tabURL = "https://start.test/"
 	ctrl.ranSteps = 0
 	response = callConsentTool(t, srv, "brw_batch", map[string]any{"steps": steps})

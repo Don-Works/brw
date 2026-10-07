@@ -12,11 +12,6 @@ import (
 	"github.com/Don-Works/brw/internal/brwidentity"
 )
 
-// transportExcludedClaims maps a phrase an agent reads as "this tool runs on
-// every transport BUT one" to the transport it rules out. It is the other half
-// of transportOnlyClaims: a tool that works on two of three lanes cannot be
-// described with an "only" sentence without naming a lane it is not on, and
-// three tools were mis-described as "direct-CDP only" for exactly that reason.
 func transportExcludedClaims() map[string]string {
 	return map[string]string{
 		"not on the extension bridge":           brwidentity.TransportExtensionBridge,
@@ -30,8 +25,6 @@ func transportExcludedClaims() map[string]string {
 	}
 }
 
-// advertisedTransports is the set of transports tools/list offers a tool on,
-// read off the same table the filter uses.
 func advertisedTransports(name string) []string {
 	var advertised []string
 	for _, transport := range brwidentity.Transports() {
@@ -42,12 +35,6 @@ func advertisedTransports(name string) []string {
 	return advertised
 }
 
-// documentedTransportClaimFiles is every prose file an agent or an operator
-// reads. The catalogue check that came with the third transport looked only at
-// the descriptions inside tools/list, so "brw_open_incognito … Direct-CDP only"
-// stayed in skills/brw/SKILL.md, in docs/agent-guide.md and in README.md while
-// all three tools were advertised on remote-cdp — in a file edited by the very
-// commit that fixed the descriptions.
 func documentedTransportClaimFiles(t *testing.T) []string {
 	t.Helper()
 	root := moduleRoot(t)
@@ -96,26 +83,15 @@ func moduleRoot(t *testing.T) string {
 	}
 }
 
-// sentenceBoundary ends a sentence at a full stop followed by whitespace,
-// tolerating the bold marker markdown puts between the two.
 var sentenceBoundary = regexp.MustCompile(`\.(?:\*\*)?\s+`)
 
-// docToolName matches a brw tool as the docs spell it, in backticks or bare.
 var docToolName = regexp.MustCompile(`brw_[a-z0-9_]+`)
 
-// documentedSentences splits a markdown file into the sentences a claim can
-// live in, keeping the line each one started on so a failure names a place to
-// go and fix.
 type documentedSentence struct {
 	line int
 	text string
 }
 
-// unitStart reports a line that begins a new markdown unit: a list item, a
-// table row or a heading. Anything else continues the unit it is in, because a
-// bullet wrapped over four lines is one sentence to whoever reads it and the
-// tools it is about are usually on the first of them while the transport claim
-// is on the last.
 func unitStart(trimmed string) bool {
 	switch {
 	case strings.HasPrefix(trimmed, "- "), strings.HasPrefix(trimmed, "* "):
@@ -161,17 +137,6 @@ func documentedSentences(content string) []documentedSentence {
 	return out
 }
 
-// A transport claim in the docs is the same promise a tool description makes,
-// read by the same agent, and wrong in the same way. The catalogue is the only
-// thing that decides which transports a tool is offered on, so a sentence that
-// says otherwise is checked against it here rather than left to whoever last
-// edited the table to remember.
-//
-// The convention this enforces: a transport claim names the tools it is about,
-// in its own sentence. A claim with no tool in it is a claim nothing can check,
-// and that is how "**Direct-CDP transport only.**" sat two lines above
-// `brw_cookies` in docs/agent-guide.md while brw_cookies was advertised on
-// remote-cdp.
 func TestNoDocumentedTransportClaimContradictsTheToolCatalogue(t *testing.T) {
 	registered := map[string]bool{}
 	for _, tool := range tools() {
@@ -239,21 +204,11 @@ func TestNoDocumentedTransportClaimContradictsTheToolCatalogue(t *testing.T) {
 	}
 }
 
-// transportEnumeration matches a documented list of transport names, the shape
-// an agent reads as "these are the lanes there are".
 var transportEnumeration = regexp.MustCompile(
 	"(?:`(?:" + transportAlternation + ")`\\s*(?:,|\\||or)\\s*)+`(?:" + transportAlternation + ")`")
 
-// transportAlternation is every transport name, for the pattern above. Built
-// from the closed set rather than spelled out, so a transport added to
-// brwidentity is one the enumeration check starts looking for instead of one it
-// silently stops noticing.
 var transportAlternation = strings.Join(brwidentity.Transports(), "|")
 
-// A docs enumeration of the transports has to be the whole closed set. A
-// two-value one is not merely incomplete: it tells an agent that the value it
-// just read from brw_identity cannot happen, so whatever it does about
-// remote-cdp is whatever it does about an impossible answer.
 func TestDocumentedTransportEnumerationsAreComplete(t *testing.T) {
 	for _, path := range documentedTransportClaimFiles(t) {
 		content, err := os.ReadFile(path)
@@ -271,8 +226,6 @@ func TestDocumentedTransportEnumerationsAreComplete(t *testing.T) {
 	}
 }
 
-// "both transports" was written when there were two. The tool descriptions are
-// already checked for it; the docs say it to the same agent.
 func TestNoDocSaysThereAreTwoTransports(t *testing.T) {
 	for _, path := range documentedTransportClaimFiles(t) {
 		content, err := os.ReadFile(path)

@@ -8,8 +8,6 @@ import (
 	"github.com/Don-Works/brw/internal/brwidentity"
 )
 
-// decodeToolJSON pulls the JSON payload out of a toolJSON result envelope
-// ({content:[{type:"text", text:"<json>"}]}) so a test can assert on fields.
 func decodeToolJSON(t *testing.T, result any) map[string]any {
 	t.Helper()
 	m, ok := result.(map[string]any)
@@ -65,11 +63,6 @@ func TestBrwIdentityReportsProfile(t *testing.T) {
 	}
 }
 
-// TestBrwIdentityWorksWithoutBridge is the whole point of the tool: it must
-// answer before any tab exists and without touching the controller, so an
-// agent can map a namespace to a profile even when the browser has no windows
-// open. identityPanicController panics if the active-tab resolver is reached;
-// only tabAgnosticTools membership keeps brw_identity off that path.
 func TestBrwIdentityWorksWithoutBridge(t *testing.T) {
 	if !tabAgnosticTools["brw_identity"] {
 		t.Fatal("brw_identity must be tab-agnostic so it never blocks on the bridge")
@@ -80,7 +73,7 @@ func TestBrwIdentityWorksWithoutBridge(t *testing.T) {
 		t.Fatalf("rpc error: %+v", rpcErr)
 	}
 	payload := decodeToolJSON(t, result)
-	// Empty identity (no profile policy) still answers, just sparsely.
+
 	if payload["connected"] != false {
 		t.Errorf("connected = %v, want false for empty identity", payload["connected"])
 	}
@@ -102,8 +95,6 @@ func TestBrwIdentityIsAlwaysAdvertised(t *testing.T) {
 	}
 }
 
-// identityPanicController fails loudly if brw_identity reaches the active-tab
-// resolver, proving the tool is genuinely bridge-independent.
 type identityPanicController struct {
 	fakeController
 }

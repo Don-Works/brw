@@ -13,8 +13,6 @@ import (
 
 const mcpFailureBundleID = "art_00112233445566778899aabbccddeeff"
 
-// failingRecipeController is a browser host whose run fails and collected
-// evidence, which is the only shape that carries failure_bundle_artifact_id.
 type failingRecipeController struct {
 	fakeController
 	bundle string
@@ -50,11 +48,6 @@ func (c *failingRecipeController) RunRecipe(_ context.Context, request recipe.Ru
 	return result, errors.New(failure)
 }
 
-// TestFailedRecipeRunReportsTheEvidenceBundleOverMCP is the client-visible half
-// of the bundle. brw_recipe_run's description tells an agent a failed run
-// reports failure_bundle_artifact_id; an error result that carries only the
-// message would make that untrue on this transport, and the manifest — and so
-// every part it names — unreachable.
 func TestFailedRecipeRunReportsTheEvidenceBundleOverMCP(t *testing.T) {
 	digest := strings.Repeat("d", 64)
 	args := json.RawMessage(`{"id":"billing.pay","version":"1.0.0","digest":"` + digest + `"}`)
@@ -79,7 +72,7 @@ func TestFailedRecipeRunReportsTheEvidenceBundleOverMCP(t *testing.T) {
 			if !ok || result["isError"] != true {
 				t.Fatalf("result = %#v, want a tool error", raw)
 			}
-			text := toolResultText(t, result)
+			text := toolText(t, result)
 			if !strings.Contains(text, "element detached") {
 				t.Fatalf("error text = %q, want the real failure preserved", text)
 			}
@@ -101,8 +94,7 @@ func TestFailedRecipeRunReportsTheEvidenceBundleOverMCP(t *testing.T) {
 				}
 				return
 			}
-			// Nothing collected: the field is absent rather than empty, and the
-			// error says nothing about an artifact that does not exist.
+
 			if _, present := structured["failure_bundle_artifact_id"]; present {
 				t.Fatalf("a run with no evidence reported a bundle: %#v", structured)
 			}
@@ -113,8 +105,6 @@ func TestFailedRecipeRunReportsTheEvidenceBundleOverMCP(t *testing.T) {
 	}
 }
 
-// TestSuccessfulRecipeRunResultShapeIsUnchanged keeps the failure path from
-// having quietly rewritten the ordinary one.
 func TestSuccessfulRecipeRunResultShapeIsUnchanged(t *testing.T) {
 	controller := &capabilityController{}
 	server := &Server{manager: controller, toolProfile: "all"}
@@ -130,16 +120,7 @@ func TestSuccessfulRecipeRunResultShapeIsUnchanged(t *testing.T) {
 	if _, isError := result["isError"]; isError {
 		t.Fatalf("successful run reported an error: %#v", result)
 	}
-	if !strings.Contains(toolResultText(t, result), `"status":"done"`) {
-		t.Fatalf("successful run text = %q", toolResultText(t, result))
+	if !strings.Contains(toolText(t, result), `"status":"done"`) {
+		t.Fatalf("successful run text = %q", toolText(t, result))
 	}
-}
-
-func toolResultText(t *testing.T, result map[string]any) string {
-	t.Helper()
-	content, ok := result["content"].([]toolContent)
-	if !ok || len(content) == 0 {
-		t.Fatalf("result has no text content: %#v", result)
-	}
-	return content[0].Text
 }

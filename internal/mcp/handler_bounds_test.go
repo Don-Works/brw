@@ -10,9 +10,6 @@ import (
 	"github.com/Don-Works/brw/internal/readability"
 )
 
-// callToolJSON runs one tool call and decodes the JSON payload the agent would
-// actually receive, so these tests cover the handler wiring rather than the
-// helpers underneath it.
 func callToolJSON(t *testing.T, srv *Server, name, args string) map[string]any {
 	t.Helper()
 	result, rpcErr := srv.callTool(context.Background(), name, json.RawMessage(args))
@@ -132,7 +129,7 @@ func TestReadToolBoundsProseByDefault(t *testing.T) {
 	if next, _ := got["next_offset"].(float64); int(next) != readability.DefaultReadMaxChars {
 		t.Fatalf("next_offset = %v, want %d", got["next_offset"], readability.DefaultReadMaxChars)
 	}
-	// The removed duplicate must not come back through the handler either.
+
 	if _, ok := got["text"]; ok {
 		t.Fatal("brw_read still returns a duplicate top-level text field")
 	}
@@ -180,7 +177,7 @@ type noisyConsoleController struct {
 func (c *noisyConsoleController) ConsoleMessages(context.Context) ([]browser.ConsoleMessage, error) {
 	c.calls++
 	if c.calls > 1 {
-		// The browser buffer drains on read, exactly as the real backends do.
+
 		return nil, nil
 	}
 	return []browser.ConsoleMessage{
@@ -201,8 +198,6 @@ func TestConsoleToolFilterKeepsUnmatchedMessagesReadable(t *testing.T) {
 		t.Fatalf("retained = %v, want the 2 filtered-out log lines still buffered", errorsOnly["retained"])
 	}
 
-	// The browser buffer is empty by now, so anything the first call returns
-	// must come from brw's own retention.
 	rest := callToolJSON(t, srv, "brw_console", `{}`)
 	if returned, _ := rest["returned"].(float64); returned != 2 {
 		t.Fatalf("second read returned %v, want the 2 messages the filter skipped", rest["returned"])
@@ -247,7 +242,6 @@ func TestPressAndScrollRepeatCollapseRoundTrips(t *testing.T) {
 		t.Fatalf("repeat=3 scrolled %d times, want 3", ctrl.scrolls)
 	}
 
-	// An omitted repeat must behave exactly as it did before the option existed.
 	callToolJSON(t, srv, "brw_press", `{"key":"Enter"}`)
 	if ctrl.presses != 21 {
 		t.Fatalf("omitted repeat pressed %d extra times, want exactly 1", ctrl.presses-20)

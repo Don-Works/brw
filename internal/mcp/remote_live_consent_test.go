@@ -19,13 +19,6 @@ import (
 	"github.com/Don-Works/brw/internal/siteconsent"
 )
 
-// The stand-in for a hosted browser. A second Chrome started on this machine
-// with its own --remote-debugging-port publishes a CDP websocket URL that is,
-// from brw's side of the socket, indistinguishable from a provider's: same
-// protocol, same handshake, and a browser brw did not launch as part of this
-// manager. The plugin contract above it (manifest, capability grant, envelope,
-// teardown) is proven in internal/browser; what is proven here is the half that
-// lives above the controller, which is the consent gate.
 func standInRemoteManager(t *testing.T) *browser.Manager {
 	t.Helper()
 	if _, err := cdp.FindChrome(""); err != nil {
@@ -93,14 +86,6 @@ var (
 	tabIDPattern = regexp.MustCompile(`"tab":\{"id":"([0-9A-Fa-f]+)"`)
 )
 
-// Acceptance 2, the consent half, against the remote target rather than against
-// a fake stamped with a transport string.
-//
-// The sibling test proves the gate does not BRANCH on transport, enumerated
-// over every declared transport. This one proves the gate is actually in front
-// of a provider-backed browser: a real Chrome brw did not launch, driven
-// through a real browser.Manager marked remote, with the refusals checked
-// against what the page says afterwards rather than against a bool on a fake.
 func TestSiteConsentIsEnforcedAgainstAProviderBackedBrowser(t *testing.T) {
 	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -120,9 +105,6 @@ func TestSiteConsentIsEnforcedAgainstAProviderBackedBrowser(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// An un-granted origin is refused, and the provider's browser never opens
-	// it — checked against the browser's own tab list, not against a recorded
-	// call, because the whole point is that the remote browser was not reached.
 	response := callConsentTool(t, srv, "brw_open", map[string]any{"url": site.URL})
 	if !strings.Contains(response, `"isError":true`) {
 		t.Fatalf("an un-granted origin opened on the provider's browser: %s", response)
@@ -137,7 +119,6 @@ func TestSiteConsentIsEnforcedAgainstAProviderBackedBrowser(t *testing.T) {
 		}
 	}
 
-	// Read scope opens it for real.
 	if _, err := guard.Allow(siteconsent.GrantOptions{Origin: origin, Scope: siteconsent.ScopeRead, Actor: "fixture-user"}); err != nil {
 		t.Fatal(err)
 	}
@@ -149,14 +130,10 @@ func TestSiteConsentIsEnforcedAgainstAProviderBackedBrowser(t *testing.T) {
 	if match == nil {
 		t.Fatalf("brw_open returned no tab id: %s", response)
 	}
-	// Named on every later call. Nothing in a headless browser is focused, so
-	// this transport reports no active tab and an agent carries the id brw_open
-	// gave it; the consent gate resolves the origin from that tab.
+
 	opened := match[1]
 	pageCtx := browser.WithTabID(ctx, opened)
 
-	// The ref comes from the live page, so the click below is a real click on a
-	// real element of the provider's browser.
 	response = callConsentTool(t, srv, "brw_find", map[string]any{"query": "Look up order", "tab_id": opened})
 	found := refPattern.FindStringSubmatch(response)
 	if found == nil {
@@ -164,7 +141,6 @@ func TestSiteConsentIsEnforcedAgainstAProviderBackedBrowser(t *testing.T) {
 	}
 	ref := found[1]
 
-	// Act scope is not covered by a read grant, and the page proves it.
 	response = callConsentTool(t, srv, "brw_click", map[string]any{"ref": ref, "tab_id": opened})
 	if !strings.Contains(response, `"isError":true`) {
 		t.Fatalf("a read-only grant acted on the provider's browser: %s", response)
@@ -173,7 +149,6 @@ func TestSiteConsentIsEnforcedAgainstAProviderBackedBrowser(t *testing.T) {
 		t.Fatalf("the refused click ran anyway: the page says %q", status)
 	}
 
-	// And a full grant is a gate rather than a transport-wide refusal.
 	if _, err := guard.Allow(siteconsent.GrantOptions{Origin: origin, Scope: siteconsent.ScopeAct, Actor: "fixture-user"}); err != nil {
 		t.Fatal(err)
 	}
@@ -196,11 +171,6 @@ func pageStatus(t *testing.T, ctx context.Context, manager *browser.Manager) str
 	return text
 }
 
-// brw_state is the one tool on this transport whose refusal is about the HOST
-// rather than about the browser, so it is checked against a real provider-backed
-// manager as well as in the unit table: the snapshot store holds sessions a
-// human signed into on this machine, and a restore would install them into
-// somebody else's browser.
 func TestSessionStateIsRefusedOnAProviderBackedBrowser(t *testing.T) {
 	manager := standInRemoteManager(t)
 	srv := New(manager)

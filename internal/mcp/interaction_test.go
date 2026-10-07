@@ -12,9 +12,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// interactionController records the interaction long tail. It is a separate
-// type from recordingController so the bare controller keeps standing in for a
-// transport WITHOUT these capabilities, which is what the refusal test needs.
 type interactionController struct {
 	recordingController
 	expression string
@@ -136,10 +133,6 @@ func TestInteractionToolsForwardToTheController(t *testing.T) {
 	}
 }
 
-// TestFocusToolPassesTheSnapshotRequest: brw_focus exists to be the step before
-// a keystroke, which is exactly when an agent wants the page back in the same
-// round trip. The HTTP route accepts snapshot, so a request the MCP tool cannot
-// express is a capability that exists on one surface only.
 func TestFocusToolPassesTheSnapshotRequest(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -162,8 +155,6 @@ func TestFocusToolPassesTheSnapshotRequest(t *testing.T) {
 	}
 }
 
-// A transport without a capability must say which capability is missing, not
-// fail somewhere downstream with an opaque error.
 func TestInteractionToolsNameTheMissingCapability(t *testing.T) {
 	ctrl := &recordingController{}
 	for _, tc := range []struct{ tool, args, want string }{
@@ -184,8 +175,6 @@ func TestInteractionToolsNameTheMissingCapability(t *testing.T) {
 	}
 }
 
-// The extension bridge cannot run any of these, so advertising them there would
-// cost an agent a round trip to discover a capability that was never present.
 func TestInteractionToolsHiddenOnTheExtensionBridge(t *testing.T) {
 	srv := NewWithToolProfile(nil, "all")
 	srv.SetIdentity(brwidentity.Identity{Transport: brwidentity.TransportExtensionBridge})
@@ -195,7 +184,7 @@ func TestInteractionToolsHiddenOnTheExtensionBridge(t *testing.T) {
 			t.Errorf("extension bridge advertised %s, which always fails there", name)
 		}
 	}
-	// The two that run in the page work on both transports.
+
 	for _, name := range []string{"brw_get", "brw_frame", "brw_focus"} {
 		if !advertised[name] {
 			t.Errorf("extension bridge dropped %s, which works there", name)

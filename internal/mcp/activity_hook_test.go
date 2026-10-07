@@ -9,9 +9,6 @@ import (
 	"time"
 )
 
-// The daemon's --idle-exit watcher lives on its HTTP server and sees only the
-// HTTP mux. A request handled here has to reach it, or a daemon serving an
-// agent over stdio counts that agent as silence and exits.
 func TestEveryRequestIsReportedToTheActivityHook(t *testing.T) {
 	server := New(fakeController{})
 
@@ -50,7 +47,6 @@ func TestEveryRequestIsReportedToTheActivityHook(t *testing.T) {
 	}
 }
 
-// A server with no hook is the ordinary case and must not reach for one.
 func TestNoActivityHookIsFine(t *testing.T) {
 	server := New(fakeController{})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -61,8 +57,6 @@ func TestNoActivityHookIsFine(t *testing.T) {
 	}
 }
 
-// A hook that returns nil must not panic the server: the daemon wires its own,
-// but the field is exported API.
 func TestAnActivityHookThatReturnsNothingIsTolerated(t *testing.T) {
 	server := New(fakeController{})
 	server.SetActivityHook(func() func() { return nil })
