@@ -5,18 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 )
 
-// LaunchAgentPrefix namespaces every LaunchAgent setup writes. It is distinct
-// from any hand-made label an operator may already have installed, which is
-// what lets setup tell its own agent apart from one it must not touch.
+// LaunchAgentPrefix namespaces every LaunchAgent setup writes.
 const LaunchAgentPrefix = "co.donworks.brwd."
 
-// ServiceParams is the fully resolved description of one per-user background
-// brwd. Every path is absolute and every address is loopback; the renderers
-// below are pure functions of this struct so a unit can be diffed in a test.
+// ServiceParams is the fully resolved description of one per-user background brwd.
 type ServiceParams struct {
 	GOOS       string
 	Workspace  string
@@ -24,17 +20,14 @@ type ServiceParams struct {
 	PolicyPath string
 	BRWDPath   string
 	HTTPAddr   string
-	// BridgeAddr is the extension bridge WebSocket address. Empty on the
-	// direct-CDP lane, where brwd launches its own browser and no extension
-	// ever connects back.
+	// BridgeAddr is the extension bridge WebSocket address.
 	BridgeAddr string
 	LogPath    string
 	WorkingDir string
 	Home       string
 }
 
-// Label is the launchd label / systemd unit name / scheduled task name for this
-// profile's daemon. One daemon per profile, so the profile name is the key.
+// Label is the launchd label / systemd unit name / scheduled task name for this profile's daemon.
 func (p ServiceParams) Label() string {
 	if p.GOOS == "darwin" {
 		return LaunchAgentPrefix + sanitiseLabel(p.Profile)
@@ -42,8 +35,7 @@ func (p ServiceParams) Label() string {
 	return "brwd-" + sanitiseLabel(p.Profile)
 }
 
-// UnitPath is where the platform's per-user service manager reads this unit
-// from. Every path is under the user's home: setup never needs root.
+// UnitPath is where the platform's per-user service manager reads this unit from.
 func (p ServiceParams) UnitPath() string {
 	switch p.GOOS {
 	case "darwin":
@@ -55,9 +47,7 @@ func (p ServiceParams) UnitPath() string {
 	}
 }
 
-// Args is the brwd command line the service runs. Callers print this verbatim
-// as the foreground command when --no-service is given, so the serviced and
-// hand-run daemons cannot drift apart.
+// Args is the brwd command line the service runs.
 func (p ServiceParams) Args() []string {
 	args := []string{p.BRWDPath}
 	if p.Workspace != "" {
@@ -92,9 +82,7 @@ func DefaultLogPath(goos, home, profile string) string {
 	}
 }
 
-// LaunchAgentPlist renders the macOS LaunchAgent. KeepAlive restarts a daemon
-// the user killed or that crashed; RunAtLoad starts it at login without a
-// second `launchctl` call.
+// LaunchAgentPlist renders the macOS LaunchAgent.
 func LaunchAgentPlist(p ServiceParams) string {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
@@ -119,9 +107,7 @@ func LaunchAgentPlist(p ServiceParams) string {
 	return b.String()
 }
 
-// SystemdUnit renders the Linux `systemd --user` service. Restart=always plus
-// the default-target install line gives the same behaviour as launchd's
-// RunAtLoad + KeepAlive.
+// SystemdUnit renders the Linux `systemd --user` service.
 func SystemdUnit(p ServiceParams) string {
 	var b strings.Builder
 	b.WriteString("[Unit]\n")
@@ -142,8 +128,7 @@ func SystemdUnit(p ServiceParams) string {
 	return b.String()
 }
 
-// WindowsLauncherScript renders the .cmd the scheduled task runs. A task
-// cannot redirect output itself, so the wrapper does it.
+// WindowsLauncherScript renders the .cmd the scheduled task runs.
 func WindowsLauncherScript(p ServiceParams) string {
 	var b strings.Builder
 	b.WriteString("@echo off\r\n")
@@ -163,10 +148,7 @@ func WindowsTaskArgs(p ServiceParams) []string {
 	}
 }
 
-// SystemdAvailable reports whether a `systemd --user` instance is actually
-// running for this user. Containers, WSL without systemd, and minimal Linux
-// installs have the binary but no user bus, where `systemctl --user` fails with
-// a message the operator cannot act on.
+// SystemdAvailable reports whether a `systemd --user` instance is actually running for this user.
 func SystemdAvailable(runtimeDir string) bool {
 	if runtimeDir == "" {
 		return false
@@ -175,16 +157,14 @@ func SystemdAvailable(runtimeDir string) bool {
 	return err == nil && info.IsDir()
 }
 
-// ServiceUnit is one already-installed background unit found on disk, reduced
-// to the fields conflict detection needs.
+// ServiceUnit is one already-installed background unit found on disk, reduced to the fields conflict detection needs.
 type ServiceUnit struct {
 	Path   string
 	Label  string
 	Tokens []string
 }
 
-// Conflict is a pre-existing unit that already drives the same brwd profile or
-// binds the same loopback ports under a label setup does not own.
+// Conflict is a pre-existing unit that already drives the same brwd profile or binds the same loopback ports under a label setup does not own.
 type Conflict struct {
 	Path   string
 	Label  string
@@ -196,10 +176,7 @@ var (
 	plistLabelPattern  = regexp.MustCompile(`(?s)<key>Label</key>\s*<string>(.*?)</string>`)
 )
 
-// ScanServiceUnits reads every per-user unit in dir that launches a brwd. It
-// tolerates unreadable and unparseable files: a unit setup cannot read is a
-// unit it must not assume is safe to replace, so it is reported as a token-less
-// entry rather than skipped.
+// ScanServiceUnits reads every per-user unit in dir that launches a brwd.
 func ScanServiceUnits(dir, goos string) ([]ServiceUnit, error) {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
@@ -244,14 +221,10 @@ func ScanServiceUnits(dir, goos string) ([]ServiceUnit, error) {
 		}
 		units = append(units, unit)
 	}
-	sort.Slice(units, func(i, j int) bool { return units[i].Path < units[j].Path })
 	return units, nil
 }
 
-// Conflicts returns the units that already own this profile or these ports
-// under a different label. Setup refuses rather than replacing them: a
-// hand-made agent is someone's deliberate configuration, and two daemons
-// bound to one port means the second never starts.
+// Conflicts returns the units that already own this profile or these ports under a different label.
 func Conflicts(units []ServiceUnit, p ServiceParams) []Conflict {
 	ourLabel := p.Label()
 	ourPath := p.UnitPath()
@@ -261,13 +234,13 @@ func Conflicts(units []ServiceUnit, p ServiceParams) []Conflict {
 			continue
 		}
 		var reasons []string
-		if p.Profile != "" && containsString(unit.Tokens, p.Profile) {
+		if p.Profile != "" && slices.Contains(unit.Tokens, p.Profile) {
 			reasons = append(reasons, "drives profile "+p.Profile)
 		}
-		if p.HTTPAddr != "" && containsString(unit.Tokens, p.HTTPAddr) {
+		if p.HTTPAddr != "" && slices.Contains(unit.Tokens, p.HTTPAddr) {
 			reasons = append(reasons, "binds HTTP "+p.HTTPAddr)
 		}
-		if p.BridgeAddr != "" && containsString(unit.Tokens, p.BridgeAddr) {
+		if p.BridgeAddr != "" && slices.Contains(unit.Tokens, p.BridgeAddr) {
 			reasons = append(reasons, "binds bridge "+p.BridgeAddr)
 		}
 		if len(reasons) == 0 {
@@ -312,8 +285,7 @@ func sanitiseLabel(name string) string {
 	return out
 }
 
-// Command renders an argv the way a shell would accept it, quoting only the
-// arguments that need it. Display only: callers exec the argv, never this.
+// Command renders an argv the way a shell would accept it, quoting only the arguments that need it.
 func Command(args []string) string {
 	return strings.Join(quoteAll(args), " ")
 }

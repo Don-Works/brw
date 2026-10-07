@@ -2,43 +2,27 @@ package setup
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
 
-// Browser is one Chromium-family browser a profile can bind to. Everything that
-// varies between them is data: the daemon drives them all over the same CDP and
-// the same extension, and a profile directory has the same layout inside every
-// one of their user data directories.
-//
-// A browser absent from this table is still reachable — `brwctl setup --browser
-// <name> --user-data-dir <path>` binds to any Chromium fork without a code
-// change — but a listed one needs no paths from the operator.
+// Browser is one Chromium-family browser a profile can bind to.
 type Browser struct {
-	// Name is the --browser value and the stem of the generated profile and
-	// workspace names.
+	// Name is the --browser value and the stem of the generated profile and workspace names.
 	Name string
 	// DisplayName is what the human sees in their Applications folder.
 	DisplayName string
-	// BundleID is the macOS preference domain whose App Nap is disabled. It is
-	// a fallback: when the application is installed, setup reads the identifier
-	// out of its Info.plist instead, so a wrong entry here cannot leave a stray
-	// preference domain behind.
+	// BundleID is the macOS preference domain whose App Nap is disabled.
 	BundleID string
 	// AppPaths are macOS install locations, most likely first.
 	AppPaths []string
 	// Commands are the executable names to look for on PATH elsewhere.
 	Commands []string
-	// UserDataDirs maps GOOS to the unexpanded user data directory. A GOOS with
-	// no entry means brw does not know where this browser keeps its profiles
-	// there; the operator has to say. Paths stay unexpanded so a policy copied
-	// to another machine or another user still resolves.
+	// UserDataDirs maps GOOS to the unexpanded user data directory.
 	UserDataDirs map[string]string
 }
 
-// browsers is ordered: detection walks it in this sequence and the first
-// browser that has actually been run wins, so Chrome and Chromium keep the
-// precedence they had before the others were listed.
 var browsers = []Browser{
 	{
 		Name:        "chrome",
@@ -109,7 +93,7 @@ var browsers = []Browser{
 		UserDataDirs: map[string]string{
 			"darwin": "~/Library/Application Support/com.operasoftware.Opera",
 			"linux":  "~/.config/opera",
-			// Opera keeps its profile in the roaming directory, unlike the rest.
+
 			"windows": "${APPDATA}/Opera Software/Opera Stable",
 		},
 	},
@@ -120,17 +104,13 @@ var browsers = []Browser{
 		AppPaths:    []string{"/Applications/Arc.app"},
 		UserDataDirs: map[string]string{
 			"darwin": "~/Library/Application Support/Arc/User Data",
-			// Arc on Windows ships as an MSIX package whose per-user data path
-			// is not a stable literal, so it is left for --user-data-dir.
 		},
 	},
 }
 
 // Browsers returns the table in detection order.
 func Browsers() []Browser {
-	out := make([]Browser, len(browsers))
-	copy(out, browsers)
-	return out
+	return slices.Clone(browsers)
 }
 
 // LookupBrowser finds a browser by its --browser name.
@@ -144,8 +124,7 @@ func LookupBrowser(name string) (Browser, bool) {
 	return Browser{}, false
 }
 
-// BrowserNames lists every --browser value, for an error message that tells the
-// operator what to type instead.
+// BrowserNames lists every --browser value, for an error message that tells the operator what to type instead.
 func BrowserNames() []string {
 	names := make([]string, 0, len(browsers))
 	for _, b := range browsers {
@@ -155,9 +134,7 @@ func BrowserNames() []string {
 	return names
 }
 
-// BrowserUserDataDir is where the named browser keeps its user data directory
-// on the named OS, unexpanded. An empty return means the table has no entry for
-// that pair and the operator has to supply one.
+// BrowserUserDataDir is where the named browser keeps its user data directory on the named OS, unexpanded.
 func BrowserUserDataDir(goos, browser string) string {
 	b, ok := LookupBrowser(browser)
 	if !ok {
@@ -166,10 +143,7 @@ func BrowserUserDataDir(goos, browser string) string {
 	return b.UserDataDirs[goos]
 }
 
-// BrowserBundleIDs are the macOS preference domains whose App Nap must be
-// disabled so a backgrounded window keeps servicing the bridge. Only the chosen
-// browser is listed: writing a default for a browser the user does not run
-// leaves a stray preference domain behind.
+// BrowserBundleIDs are the macOS preference domains whose App Nap must be disabled so a backgrounded window keeps servicing the bridge.
 func BrowserBundleIDs(browser string) []string {
 	b, ok := LookupBrowser(browser)
 	if !ok || b.BundleID == "" {
@@ -179,7 +153,6 @@ func BrowserBundleIDs(browser string) []string {
 }
 
 // BrowserDisplayName is the name a human sees in their Applications folder.
-// An unlisted browser is named as the operator typed it.
 func BrowserDisplayName(browser string) string {
 	if b, ok := LookupBrowser(browser); ok {
 		return b.DisplayName
@@ -187,8 +160,7 @@ func BrowserDisplayName(browser string) string {
 	return browser
 }
 
-// UnknownBrowserError explains what the operator can type, including the escape
-// hatch for a fork brw has never heard of.
+// UnknownBrowserError explains what the operator can type, including the escape hatch for a fork brw has never heard of.
 func UnknownBrowserError(browser string) error {
 	return fmt.Errorf("unknown browser %q: choose one of %s, or name any Chromium build with --browser %s --user-data-dir <path>",
 		browser, strings.Join(BrowserNames(), ", "), browser)

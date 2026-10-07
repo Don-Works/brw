@@ -24,8 +24,6 @@ func TestParseBrowserVersion(t *testing.T) {
 	}
 }
 
-// TestBrowserExecutableFallsBackToPath covers the non-macOS lane, where a
-// browser is only ever found through PATH.
 func TestBrowserExecutableFallsBackToPath(t *testing.T) {
 	chrome, ok := LookupBrowser(BrowserChrome)
 	if !ok {

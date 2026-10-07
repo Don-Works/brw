@@ -7,30 +7,18 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
-// BridgeDefaultsFile carries the bridge endpoint for one installed extension
-// copy, and nothing secret: the handshake token is minted per launch and stays
-// in the daemon's memory. It is per-install state rather than payload, so an
-// upgrade that replaces a payload directory wholesale has to carry it across, or
-// the copy falls back to the built-in endpoint and a profile bound to another
-// port stops connecting.
+// BridgeDefaultsFile carries the bridge endpoint for one installed extension copy, and nothing secret: the handshake token is minted per launch and stays in the daemon's memory.
 const BridgeDefaultsFile = "bridge-defaults.json"
 
-// PayloadItems are the top-level names a release archive owns. An install or
-// upgrade replaces exactly these and nothing else, so neither can reach config/
-// or a per-profile extension copy. Same list as scripts/install.sh.
+// PayloadItems are the top-level names a release archive owns.
 var PayloadItems = []string{"bin", "extension", "tests", "skills", "reader", "doc"}
 
-// perProfileExtensionPrefix names the per-profile unpacked extension copies. A
-// machine driving more than one browser profile has one per profile, each with
-// its own bridge endpoint, and each loaded unpacked from its own directory.
 const perProfileExtensionPrefix = "extension-"
 
-// ExtensionPayloadVersion is the manifest version of an unpacked extension
-// directory: the build the browser runs once it has loaded that directory.
+// ExtensionPayloadVersion is the manifest version of an unpacked extension directory: the build the browser runs once it has loaded that directory.
 func ExtensionPayloadVersion(dir string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
@@ -48,10 +36,7 @@ func ExtensionPayloadVersion(dir string) (string, error) {
 	return manifest.Version, nil
 }
 
-// PerProfileExtensionDirs lists the per-profile extension payload copies under
-// appDir. Symlinks are excluded: a symlinked payload is someone pointing a
-// profile at a checkout on purpose, and replacing it would silently detach them
-// from the tree they are editing.
+// PerProfileExtensionDirs lists the per-profile extension payload copies under appDir.
 func PerProfileExtensionDirs(appDir string) ([]string, error) {
 	entries, err := os.ReadDir(appDir)
 	if os.IsNotExist(err) {
@@ -72,17 +57,10 @@ func PerProfileExtensionDirs(appDir string) ([]string, error) {
 		}
 		dirs = append(dirs, path)
 	}
-	sort.Strings(dirs)
 	return dirs, nil
 }
 
-// RefreshExtensionPayloads brings every per-profile extension copy under appDir
-// back in step with appDir/extension, preserving each copy's own
-// bridge-defaults.json, and returns the directory names it refreshed.
-//
-// Refreshing only appDir/extension leaves every other profile running the
-// previous extension with nothing to say so: the daemon moves, the browser does
-// not. That is the failure scripts/install.sh grew this same loop to fix.
+// RefreshExtensionPayloads brings every per-profile extension copy under appDir back in step with appDir/extension, preserving each copy's own bridge-defaults.json, and returns the directory names it refreshed.
 func RefreshExtensionPayloads(appDir string) ([]string, error) {
 	source := filepath.Join(appDir, "extension")
 	if _, err := os.Stat(filepath.Join(source, "manifest.json")); err != nil {
@@ -102,14 +80,7 @@ func RefreshExtensionPayloads(appDir string) ([]string, error) {
 	return refreshed, nil
 }
 
-// InstallPayload replaces every PayloadItems entry in appDir with the copy in
-// unpacked and then refreshes the per-profile extension payloads, returning the
-// names of the copies it refreshed.
-//
-// Each item is removed before it is written rather than copied over: on Unix
-// that unlinks the directory entry while a running brwd keeps its own inode, so
-// the daemon serving this upgrade does not have its binary rewritten underneath
-// it and no write can fail with ETXTBSY.
+// InstallPayload replaces every PayloadItems entry in appDir with the copy in unpacked and then refreshes the per-profile extension payloads, returning the names of the copies it refreshed.
 func InstallPayload(unpacked, appDir string) ([]string, error) {
 	if strings.TrimSpace(appDir) == "" || filepath.Clean(appDir) == string(filepath.Separator) {
 		return nil, errors.New("refusing to install a payload over the filesystem root")
@@ -129,33 +100,38 @@ func InstallPayload(unpacked, appDir string) ([]string, error) {
 	return RefreshExtensionPayloads(appDir)
 }
 
-// replacePayloadDir swaps dst for a copy of src, carrying dst's own
-// bridge-defaults.json (if it had one) into the replacement.
 func replacePayloadDir(src, dst string) error {
 	defaults, defaultsMode, hadDefaults, err := readBridgeDefaults(dst)
 	if err != nil {
 		return err
 	}
-	if err := os.RemoveAll(dst); err != nil {
+	stage, err := os.MkdirTemp(filepath.Dir(dst), ".brw-payload-")
+	if err != nil {
 		return err
 	}
-	if err := copyTreeWithModes(src, dst); err != nil {
+	defer os.RemoveAll(stage)
+	if err := copyTreeWithModes(src, stage); err != nil {
 		return err
 	}
-	// The source payload carries a bridge-defaults.json of its own whenever it
-	// is a live install: RefreshExtensionPayloads copies from appDir/extension,
-	// which holds the DEFAULT profile's endpoint. Dropping the copied one
-	// unconditionally is what keeps that endpoint out of every other profile's
-	// extension, which would otherwise connect to the wrong profile's daemon.
-	// scripts/install.sh and `task sync-installed-extensions` both drop it the
-	// same way.
-	if err := os.Remove(filepath.Join(dst, BridgeDefaultsFile)); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(filepath.Join(stage, BridgeDefaultsFile)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if !hadDefaults {
-		return nil
+	if hadDefaults {
+		if err := os.WriteFile(filepath.Join(stage, BridgeDefaultsFile), defaults, defaultsMode); err != nil {
+			return err
+		}
 	}
-	return os.WriteFile(filepath.Join(dst, BridgeDefaultsFile), defaults, defaultsMode)
+	previous := stage + "-old"
+	if err := os.Rename(dst, previous); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Rename(stage, dst); err != nil {
+		if _, statErr := os.Lstat(previous); statErr == nil {
+			return errors.Join(err, os.Rename(previous, dst))
+		}
+		return err
+	}
+	return os.RemoveAll(previous)
 }
 
 func readBridgeDefaults(dir string) (data []byte, mode os.FileMode, found bool, err error) {
@@ -174,9 +150,6 @@ func readBridgeDefaults(dir string) (data []byte, mode os.FileMode, found bool, 
 	return data, info.Mode().Perm(), true, nil
 }
 
-// copyTreeWithModes copies src to a fresh dst, preserving file modes. CopyTree
-// cannot be used for a release payload: it normalises every file to 0644, which
-// would leave the unpacked binaries unexecutable.
 func copyTreeWithModes(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {

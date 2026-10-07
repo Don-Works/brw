@@ -7,10 +7,6 @@ import (
 	"github.com/Don-Works/brw/internal/brwidentity"
 )
 
-// doctor prints this table as the answer to "what can this install do". Every
-// lane brw can report has to be in it: a lane that fell through to another
-// lane's text would be described authoritatively and wrongly, and the reader
-// has nothing to check it against.
 func TestEveryTransportIsDescribed(t *testing.T) {
 	for _, transport := range brwidentity.Transports() {
 		caps := CapabilitiesFor(transport)
@@ -24,16 +20,13 @@ func TestEveryTransportIsDescribed(t *testing.T) {
 	if len(capabilityTable) != len(brwidentity.Transports()) {
 		t.Errorf("%d described lanes but %d transports brw can report", len(capabilityTable), len(brwidentity.Transports()))
 	}
-	// An unclassified lane must say so rather than borrowing another's list.
+
 	unknown := CapabilitiesFor("some-future-lane")
 	if !strings.HasPrefix(unknown.Has, "unknown") || !strings.HasPrefix(unknown.Lacks, "unknown") {
 		t.Fatalf("an undescribed transport was described as %+v", unknown)
 	}
 }
 
-// The lanes differ in exactly the capabilities people ask about, so the text has
-// to differ there. Two lanes sharing a sentence is the way this table has gone
-// wrong before.
 func TestLaneDescriptionsDifferWhereTheLanesDo(t *testing.T) {
 	for _, tc := range []struct {
 		transport   string

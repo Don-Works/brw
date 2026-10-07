@@ -1,13 +1,13 @@
 package setup
 
 import (
+	"bytes"
 	"io/fs"
 	"os"
 	"path/filepath"
 )
 
-// SkillDestinations are the global skill directories the common agent harnesses
-// discover. One copy per harness, all under the user's home.
+// SkillDestinations are the global skill directories the common agent harnesses discover.
 func SkillDestinations(home string) []string {
 	return []string{
 		filepath.Join(home, ".claude", "skills", "brw"),
@@ -16,16 +16,7 @@ func SkillDestinations(home string) []string {
 	}
 }
 
-// CopyTree mirrors an fs.FS into dst and reports whether anything on disk
-// changed. Identical content is left alone so a re-run can honestly say it did
-// nothing, and files the source no longer has are removed so a stale skill page
-// cannot linger as instructions an agent still reads.
-//
-// The source is an fs.FS rather than a directory path because the skill brwctl
-// installs comes out of the binary (see internal/agentskill). Hunting for a
-// directory next to the executable is what let the copy on disk and the daemon
-// serving it drift apart in the first place: whichever brw ran setup decided
-// what the page said, for every brw afterwards.
+// CopyTree mirrors an fs.FS into dst and reports whether anything on disk changed.
 func CopyTree(src fs.FS, dst string) (changed bool, err error) {
 	wanted := map[string]bool{}
 	err = fs.WalkDir(src, ".", func(path string, entry fs.DirEntry, walkErr error) error {
@@ -53,7 +44,7 @@ func CopyTree(src fs.FS, dst string) (changed bool, err error) {
 		if err != nil {
 			return err
 		}
-		if existing, readErr := os.ReadFile(target); readErr == nil && string(existing) == string(data) {
+		if existing, readErr := os.ReadFile(target); readErr == nil && bytes.Equal(existing, data) {
 			return nil
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {

@@ -9,30 +9,14 @@ import (
 	"strings"
 )
 
-// InstalledBridgeDefault is one extension copy's bridge-defaults.json: the
-// packaged endpoint the extension falls back to when its own stored config sets
-// none.
-//
-// StatusURL is empty when the file names no endpoint at all, which is different
-// from "no file": a file that configures only a label leaves the endpoint to the
-// built-in default and is not drift.
+// InstalledBridgeDefault is one extension copy's bridge-defaults.json: the packaged endpoint the extension falls back to when its own stored config sets none.
 type InstalledBridgeDefault struct {
 	Path      string
 	StatusURL string
 	BridgeURL string
 }
 
-// InstalledBridgeDefaults reads every bridge-defaults.json under appDir — the
-// shared extension payload and each per-profile copy.
-//
-// The file is install state, not payload: no release archive contains one, and
-// both scripts/install.sh and RefreshExtensionPayloads copy each profile's own
-// copy across an upgrade. So a machine that was once pointed at a port keeps
-// pointing at it, long after the daemon moved, and nothing in a release ever
-// corrects it.
-//
-// A copy that cannot be read or parsed is skipped rather than failing the lot:
-// this is diagnostic input, and one unreadable profile must not hide the rest.
+// InstalledBridgeDefaults reads every bridge-defaults.json under appDir — the shared extension payload and each per-profile copy.
 func InstalledBridgeDefaults(appDir string) ([]InstalledBridgeDefault, error) {
 	dirs := []string{filepath.Join(appDir, "extension")}
 	perProfile, err := PerProfileExtensionDirs(appDir)
@@ -76,8 +60,6 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// bridgeURLFromPort mirrors the extension's bridgePort shorthand. JSON numbers
-// decode as float64, so the port is accepted in either spelling.
 func bridgeURLFromPort(value any) string {
 	var port int
 	switch typed := value.(type) {
@@ -98,8 +80,6 @@ func bridgeURLFromPort(value any) string {
 	return "ws://127.0.0.1:" + strconv.Itoa(port) + "/extension"
 }
 
-// statusURLFromBridgeURL mirrors the extension's deriveStatusURL: same host and
-// port, http scheme, /status path.
 func statusURLFromBridgeURL(bridgeURL string) string {
 	if bridgeURL == "" {
 		return ""

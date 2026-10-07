@@ -9,9 +9,6 @@ import (
 	"github.com/Don-Works/brw/internal/profilepolicy"
 )
 
-// TestDetectClaudeInChrome fixes the rule that keeps this warning from becoming
-// noise: it fires only on a positive signal, and an explicit false wins over
-// the older onboarding heuristics.
 func TestDetectClaudeInChrome(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -139,8 +136,7 @@ func TestResolvedTransport(t *testing.T) {
 	}{
 		{"bridge only", profilepolicy.Profile{ExtensionBridgeAllowed: true}, ResolvedExtensionBridge},
 		{"direct only", profilepolicy.Profile{DirectCDPAllowed: true}, ResolvedDirectCDP},
-		// Matches `mcp-config --mode auto`, which prefers direct when a profile
-		// allows both; doctor must name the lane the daemon will actually use.
+
 		{"both allowed prefers direct", profilepolicy.Profile{DirectCDPAllowed: true, ExtensionBridgeAllowed: true}, ResolvedDirectCDP},
 		{"neither", profilepolicy.Profile{}, ""},
 	}

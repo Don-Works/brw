@@ -26,8 +26,7 @@ func TestBrowserTableIsWellFormed(t *testing.T) {
 				t.Fatal("a browser with no user data directory anywhere cannot be bound to")
 			}
 			for goos, path := range b.UserDataDirs {
-				// A policy is copied between machines and users, so the paths in
-				// it stay unexpanded and profilepolicy expands them at load.
+
 				if !strings.HasPrefix(path, "~/") && !strings.HasPrefix(path, "${") {
 					t.Fatalf("%s path %q must stay unexpanded", goos, path)
 				}
@@ -42,8 +41,6 @@ func TestBrowserTableIsWellFormed(t *testing.T) {
 	}
 }
 
-// Chrome is the fallback when nothing has been run and Chromium is the browser
-// brw champions, so both keep their precedence as the table grows.
 func TestBrowserTableOrder(t *testing.T) {
 	all := Browsers()
 	if len(all) < 2 {
@@ -95,10 +92,9 @@ func TestBrowserUserDataDir(t *testing.T) {
 		{name: "chromium windows", goos: "windows", browser: "chromium", want: "${LOCALAPPDATA}/Chromium/User Data"},
 		{name: "edge windows", goos: "windows", browser: "edge", want: "${LOCALAPPDATA}/Microsoft/Edge/User Data"},
 		{name: "brave darwin", goos: "darwin", browser: "brave", want: "~/Library/Application Support/BraveSoftware/Brave-Browser"},
-		// Opera is the one that roams on Windows.
+
 		{name: "opera windows", goos: "windows", browser: "opera", want: "${APPDATA}/Opera Software/Opera Stable"},
-		// Arc on Windows is MSIX-packaged with no stable literal path, so the
-		// table says nothing rather than guessing.
+
 		{name: "arc windows is unknown", goos: "windows", browser: "arc", want: ""},
 		{name: "unlisted browser", goos: "darwin", browser: "comet", want: ""},
 	}
@@ -118,8 +114,7 @@ func TestBrowserBundleIDsAndNames(t *testing.T) {
 	if got := BrowserBundleIDs("comet"); got != nil {
 		t.Fatalf("BrowserBundleIDs(comet) = %v, want nil", got)
 	}
-	// An unlisted browser is named back as the operator typed it, so every
-	// message about it stays readable.
+
 	if got := BrowserDisplayName("comet"); got != "comet" {
 		t.Fatalf("BrowserDisplayName(comet) = %q", got)
 	}
@@ -142,10 +137,6 @@ func TestPolicyRequestPrefersTheOperatorsUserDataDir(t *testing.T) {
 	}
 }
 
-// A browser this table can bind a policy to must also be one the direct-CDP
-// lane can launch, or `--transport direct-cdp` writes a profile that needs
-// --chrome-path to start. The two lists live in different packages because the
-// layering runs one way; this is what stops them drifting.
 func TestEveryTableBrowserIsDiscoverable(t *testing.T) {
 	for _, goos := range []string{"darwin", "linux"} {
 		candidates := strings.Join(cdp.Candidates(goos), "\n")
@@ -155,8 +146,7 @@ func TestEveryTableBrowserIsDiscoverable(t *testing.T) {
 			}
 			t.Run(goos+"/"+b.Name, func(t *testing.T) {
 				if goos == "darwin" {
-					// The executable inside a bundle is the bundle name without
-					// .app, which holds for every browser in the table.
+
 					for _, app := range b.AppPaths {
 						want := strings.TrimSuffix(app, ".app")
 						want = app + "/Contents/MacOS/" + path.Base(want)
