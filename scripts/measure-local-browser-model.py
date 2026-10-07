@@ -13,14 +13,15 @@ import random
 import statistics
 import struct
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 
 
 _USAGE_SPEC = importlib.util.spec_from_file_location("brw_reader_usage", pathlib.Path(__file__).with_name("browser-reader-usage.py"))
 USAGE = importlib.util.module_from_spec(_USAGE_SPEC)
 _USAGE_SPEC.loader.exec_module(USAGE)
+_HTTP_SPEC = importlib.util.spec_from_file_location("brw_reader_http", pathlib.Path(__file__).with_name("browser-answer-worker.py"))
+HTTP = importlib.util.module_from_spec(_HTTP_SPEC)
+_HTTP_SPEC.loader.exec_module(HTTP)
 
 def tool(name, description, properties, required):
     return {'type': 'function', 'function': {'name': name, 'description': description, 'parameters': {'type': 'object', 'properties': properties, 'required': required, 'additionalProperties': False}}}
@@ -89,6 +90,15 @@ def png_dimensions(image):
     raise ValueError('Fixture PNG is truncated or lacks image data')
 
 
+def finite_number(value):
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def vision_cases(path):
     manifest = bounded_json(path)
     if set(manifest) != {'schema_version', 'source_policy', 'cases'} or type(manifest['schema_version']) is not int or manifest['schema_version'] != 1 or manifest['source_policy'] not in {'public_fixture', 'owned_fixture'}:
@@ -118,7 +128,7 @@ def vision_cases(path):
             raise ValueError('Expected proposal does not match its tool schema')
         for name, value in expected['arguments'].items():
             kind = schema['properties'][name]['type']
-            if (kind == 'string' and not isinstance(value, str)) or (kind == 'number' and (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value))):
+            if (kind == 'string' and not isinstance(value, str)) or (kind == 'number' and not finite_number(value)):
                 raise ValueError('Expected proposal argument has the wrong type')
         if not isinstance(row['image'], str) or pathlib.Path(row['image']).is_absolute():
             raise ValueError('Fixture image must be relative to its manifest')
@@ -134,14 +144,14 @@ def vision_cases(path):
             raise ValueError('Fixture PNG dimensions exceed the pixel budget')
         case = {'name': row['name'], 'goal': row['goal'], 'observation': observation, 'expected': expected}
         transform = row.get('image_transform', {'viewport_x': 0, 'viewport_y': 0, 'css_per_image_pixel': 1})
-        if not isinstance(transform, dict) or set(transform) != {'viewport_x', 'viewport_y', 'css_per_image_pixel'} or any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) for value in transform.values()) or transform['viewport_x'] < 0 or transform['viewport_y'] < 0 or not 1/16 <= transform['css_per_image_pixel'] <= 16:
+        if not isinstance(transform, dict) or set(transform) != {'viewport_x', 'viewport_y', 'css_per_image_pixel'} or not all(finite_number(value) for value in transform.values()) or transform['viewport_x'] < 0 or transform['viewport_y'] < 0 or not 1/16 <= transform['css_per_image_pixel'] <= 16:
             raise ValueError('Image transform must pin finite viewport offsets and CSS scaling')
         case['image_transform'] = transform
         if 'target_region' in row:
             region = row['target_region']
             if not isinstance(region, dict) or set(region) - {'x', 'y', 'width', 'height', 'shape'} or not {'x', 'y', 'width', 'height'} <= set(region):
                 raise ValueError('Invalid target geometry')
-            if any(isinstance(region[key], bool) or not isinstance(region[key], (int, float)) or not math.isfinite(region[key]) for key in ('x', 'y', 'width', 'height')):
+            if not all(finite_number(region[key]) for key in ('x', 'y', 'width', 'height')):
                 raise ValueError('Target geometry must contain finite numbers')
             if region['x'] < 0 or region['y'] < 0 or region['width'] <= 0 or region['height'] <= 0 or region['x'] + region['width'] > width or region['y'] + region['height'] > height or region.get('shape', 'rectangle') not in {'rectangle', 'ellipse', 'diamond'} or expected['name'] != 'brw_click_xy':
                 raise ValueError('Target region must lie inside the PNG and grade a coordinate proposal')
@@ -161,13 +171,15 @@ def public_case(case):
 
 
 def correct_proposal(actual, case):
+    if len(actual) == 1 and actual[0]['name'] == 'brw_click_xy':
+        arguments = actual[0]['arguments']
+        if not isinstance(arguments, dict) or set(arguments) != {'x', 'y'} or not all(finite_number(value) for value in arguments.values()):
+            return False
     if 'target_region' not in case:
         return actual == [case['expected']]
     if len(actual) != 1 or actual[0]['name'] != case['expected']['name'] or not isinstance(actual[0]['arguments'], dict) or set(actual[0]['arguments']) != {'x', 'y'}:
         return False
     x, y = actual[0]['arguments']['x'], actual[0]['arguments']['y']
-    if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) for value in (x, y)):
-        return False
     transform = case.get('image_transform', {'viewport_x': 0, 'viewport_y': 0, 'css_per_image_pixel': 1})
     x, y = (x-transform['viewport_x'])/transform['css_per_image_pixel'], (y-transform['viewport_y'])/transform['css_per_image_pixel']
     if 'image' in case and not (0 <= x < case['image']['width'] and 0 <= y < case['image']['height']):
@@ -210,7 +222,7 @@ def cases():
     return result
 
 
-def request(endpoint, model, case, structured=False, examples=False, reasoning_effort=None, tool_examples=False, event=None, api_key=None, runtime_identity=None, request_phase='unspecified'):
+def request(endpoint, model, case, structured=False, examples=False, reasoning_effort=None, tool_examples=False, event=None, api_key=None, runtime_identity=None, request_phase='unspecified', request_timeout=30):
     whole_started = time.perf_counter()
     observation = case['observation']
     if structured:
@@ -276,32 +288,18 @@ def request(endpoint, model, case, structured=False, examples=False, reasoning_e
     }
     if event:
         event({'event': 'request_started', 'case': case['name'], 'model': model, **metrics})
-    headers = {'Content-Type': 'application/json', 'X-Request-ID': request_id}
-    if api_key:
-        headers['Authorization'] = 'Bearer ' + api_key
-    req = urllib.request.Request(endpoint.rstrip('/') + '/chat/completions', data=payload, headers=headers)
     start = time.perf_counter()
     result = {'case': case['name'], 'pass': False, **metrics}
     phase = 'transport'
     try:
-        with urllib.request.urlopen(req, timeout=30) as response:
-            headers_at = time.perf_counter()
-            result['http_status'] = response.status
-            result['provider_request_id'] = response.headers.get('x-request-id')
-            raw = response.read(1048577)
-            read_at = time.perf_counter()
-        result['request_to_headers_ms'] = round((headers_at-start)*1000, 3)
-        result['response_read_ms'] = round((read_at-headers_at)*1000, 3)
-        result['response_bytes'] = len(raw)
-        if len(raw) > 1048576:
-            phase = 'response_limit'
-            raise ValueError('response exceeded 1 MiB')
-        phase = 'response_json'
-        answer = USAGE.decode_json(raw)
+        answer, timing = HTTP.optional_http(endpoint.rstrip('/') + '/chat/completions', body, api_key, time.monotonic()+request_timeout, USAGE.Ledger(enabled=False), 'answer', request_id, 'off', request_id=request_id)
         decoded_at = time.perf_counter()
-        result['decode_ms'] = round((decoded_at-read_at)*1000, 3)
+        for name in ('http_status', 'provider_request_id', 'request_to_headers_ms', 'response_read_ms', 'response_bytes', 'response_text_chars'):
+            result[name] = timing[name]
+        result['decode_ms'] = timing['response_decode_ms']
+        result['http_ms'] = timing['ms']
         result['whole_response_ms'] = round((decoded_at-start)*1000, 3)
-        result['response_text_chars'] = len(raw.decode('utf-8'))
+        result['whole_response_scope'] = 'Child startup, HTTP response and decode, IPC and child cleanup; HTTP phase times exclude child startup.'
         result['estimated_response_tokens_chars4'] = math.ceil(result['response_text_chars'] / 4)
         phase = 'response_schema'
         choice = answer['choices'][0]
@@ -339,11 +337,17 @@ def request(endpoint, model, case, structured=False, examples=False, reasoning_e
             outcome = 'wrong_arguments'
         result['outcome'] = outcome
         result['validation_ms'] = round((time.perf_counter()-decoded_at)*1000, 3)
-    except urllib.error.HTTPError as error:
-        detail = error.read(2048).decode(errors='replace')
-        error.close()
-        outcome = 'context_window_exceeded' if 'context_length_exceeded' in detail else 'http_error'
-        result.update({'outcome': outcome, 'http_status': error.code, 'error': detail})
+    except HTTP.OptionalCleanupFailure:
+        raise
+    except HTTP.OptionalFailure as error:
+        reason = HTTP.failure_reason(error)
+        outcome = 'context_window_exceeded' if error.metadata.get('context_length_exceeded') else {'http': 'http_error', 'oversized_response': 'response_limit_error', 'invalid_response': 'response_json_error', 'empty_response': 'response_json_error'}.get(reason, 'transport_error')
+        result.update({'outcome': outcome, 'error': reason})
+        for name in ('http_status', 'response_bytes', 'response_text_chars', 'request_to_headers_ms'):
+            if name in error.metadata:
+                result[name] = error.metadata[name]
+        if 'response_text_chars' in result:
+            result['estimated_response_tokens_chars4'] = math.ceil(result['response_text_chars']/4)
     except Exception as error:
         result.update({'outcome': phase + '_error', 'error': str(error)})
     result['ms'] = round((time.perf_counter()-start)*1000, 2)
@@ -390,6 +394,8 @@ def main():
     dataset = all_cases[:args.limit]
     metadata = [public_case(case) for case in dataset]
     manifest = {'schema_version': 1, 'harness_sha256': hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(), 'dataset_sha256': hashlib.sha256(json.dumps(metadata, sort_keys=True).encode()).hexdigest(), 'selection': {'available': len(all_cases), 'selected_ids': [case['name'] for case in dataset], 'limit': args.limit, 'synthetic_text_seed': 20261001 if not args.vision_fixtures else None}, 'model': args.model, 'endpoint': args.endpoint, 'runtime_identity': identity, 'runtime_identity_source': 'operator_manifest' if identity else 'unrecorded', 'runtime_identity_verified': False, 'first_request_state': args.first_request_state, 'cache_state_source': 'operator_declaration', 'cases': metadata, 'settings': {'structured': args.structured, 'examples': args.examples, 'tool_examples': args.tool_examples, 'reasoning_effort': args.reasoning_effort, 'temperature': 0, 'max_tokens': 128, 'thinking_requested': False, 'tools': VISION_TOOLS if args.vision_fixtures else TOOLS}, 'resource_limits': {'planned_requests': len(dataset) + 1, 'request_timeout_seconds': 30, 'response_bytes': 1048576, 'image_bytes': 4 << 20, 'image_pixels': 16777216, 'stop_after_consecutive_errors': 2}, 'effects_executed': False, 'model_loaded_by_harness': False}
+    manifest['client_dependency_sha256'] = {name: hashlib.sha256(pathlib.Path(__file__).with_name(name).read_bytes()).hexdigest() for name in ('browser-answer-worker.py', 'browser-reader-usage.py')}
+    manifest['resource_limits'].update(request_timeout_scope='Whole HTTP child request', child_cleanup_seconds=1, child_input_bytes=8 << 20)
     with open(args.out + '.manifest.json', 'w') as file:
         json.dump(manifest, file, indent=2, allow_nan=False)
         file.write('\n')
