@@ -131,7 +131,15 @@ func (m *Manager) devtoolsContext(ctx context.Context, timeout time.Duration) (s
 	if timeout < m.timeout {
 		timeout = m.timeout
 	}
-	return m.activeContextWithTimeout(ctx, timeout)
+	tabID, tabCtx, cancel, err := m.activeContextWithTimeout(ctx, timeout)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
+		cancel()
+		return "", nil, nil, err
+	}
+	return tabID, tabCtx, cancel, nil
 }
 
 // ensureAxeInstalled injects the embedded engine unless a usable one is already

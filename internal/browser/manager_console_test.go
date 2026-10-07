@@ -32,6 +32,9 @@ func TestManagerConsoleCaptureDrainsAndSurvivesNavigation(t *testing.T) {
 	if drained, err := m.ConsoleMessages(tabCtx); err != nil || len(drained) != 0 {
 		t.Fatalf("second drain = %+v, err=%v", drained, err)
 	}
+	if _, err := m.Evaluate(tabCtx, `console.log('old-document-private-line'); true`); err != nil {
+		t.Fatal(err)
+	}
 
 	// The document-start registration must catch a destination page's inline
 	// script, not merely logs emitted after brw_console is called.
@@ -45,6 +48,11 @@ func TestManagerConsoleCaptureDrainsAndSurvivesNavigation(t *testing.T) {
 	}
 	if len(messages) == 0 || messages[0].Level != "warn" || !strings.Contains(messages[0].Text, "after-navigation") {
 		t.Fatalf("navigation console messages = %+v", messages)
+	}
+	for _, message := range messages {
+		if strings.Contains(message.Text, "old-document-private-line") {
+			t.Fatal("console retained a previous document's private line")
+		}
 	}
 
 	// Native Runtime.exceptionThrown capture must include load-time errors too;

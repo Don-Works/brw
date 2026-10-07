@@ -52,6 +52,10 @@ func TestSpecializedTabContextsEnforceAccessBeforeBrowserWork(t *testing.T) {
 			return err
 		},
 		"stream": func(m *Manager) error { _, err := m.tabContextFor(ctx); return err },
+		"route": func(m *Manager) error {
+			_, err := m.Route(ctx, RouteOptions{Action: "list", TabID: "private-tab"})
+			return err
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			m := &Manager{remote: &RemoteTarget{ExpiresAt: time.Now().Add(-time.Hour)}}

@@ -55,11 +55,22 @@ func (m *Manager) Profile(ctx context.Context, opts ProfileOptions) (ProfileResu
 	if err != nil {
 		return ProfileResult{}, err
 	}
+	liveCtx = carryConsentHooks(ctx, liveCtx)
 
 	if req.Action == "start" {
+		if err := m.guardCurrentURL(tabID, liveCtx); err != nil {
+			return ProfileResult{}, err
+		}
 		return m.startProfile(ctx, liveCtx, tabID, req)
 	}
-	return m.stopProfile(ctx, liveCtx, tabID, req)
+	result, err := m.stopProfile(ctx, liveCtx, tabID, req)
+	if err == nil {
+		err = m.guardCurrentURL(tabID, liveCtx)
+	}
+	if err != nil {
+		return ProfileResult{}, err
+	}
+	return result, nil
 }
 
 func (m *Manager) startProfile(ctx context.Context, liveCtx context.Context, tabID string, req ProfileOptions) (ProfileResult, error) {

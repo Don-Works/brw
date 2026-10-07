@@ -62,6 +62,11 @@ const (
 // subscription rather than only from the in-page listener, which dies with the
 // execution context the navigation is destroying and so cannot report it.
 func (m *Manager) runWithPrearmedSettle(tabCtx context.Context, cap time.Duration, action func() error) error {
+	if FrameReadCheckFromContext(tabCtx) != nil {
+		if err := m.guardCurrentURL(eventScopeFromCtx(tabCtx), tabCtx); err != nil {
+			return err
+		}
+	}
 	// Never actuate after the owning tab/request has already been cancelled. In
 	// particular, an ArmSettle failure caused by cancellation must not be treated
 	// like an ordinary "observer unavailable" fallback.
@@ -1483,7 +1488,7 @@ func isTopLevelAwaitSyntaxError(err error) bool {
 }
 
 func (m *Manager) NetworkRequests(ctx context.Context, filter string) ([]NetworkRequest, error) {
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1509,6 +1514,9 @@ func (m *Manager) NetworkRequests(ctx context.Context, filter string) ([]Network
 	})(%s)`, filterJSON)
 	var requests []NetworkRequest
 	if err := chromedp.Run(tabCtx, chromedp.Evaluate(expr, &requests)); err != nil {
+		return nil, err
+	}
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
 		return nil, err
 	}
 	return requests, nil
@@ -1626,15 +1634,21 @@ func (m *Manager) FocusRef(ctx context.Context, ref string) error {
 	if err := m.guardTakeover("focus"); err != nil {
 		return err
 	}
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return err
 	}
 	defer cancel()
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
+		return err
+	}
 	if err := snapshot.WaitForActionable(tabCtx, ref, 5000); err != nil {
 		return err
 	}
-	return snapshot.Focus(tabCtx, ref)
+	if err := snapshot.Focus(tabCtx, ref); err != nil {
+		return err
+	}
+	return m.guardCurrentURL(tabID, tabCtx)
 }
 
 func (m *Manager) Fill(ctx context.Context, opts snapshot.FillOptions) (ActionResult, error) {
@@ -2197,17 +2211,23 @@ func (m *Manager) evalAssert(ctx context.Context, timeout time.Duration, script 
 	if timeout == 0 {
 		timeout = 5 * time.Second
 	}
-	_, tabCtx, cancel, err := m.activeContextWithTimeout(ctx, timeout+2*time.Second)
+	tabID, tabCtx, cancel, err := m.activeContextWithTimeout(ctx, timeout+2*time.Second)
 	if err != nil {
 		return err
 	}
 	defer cancel()
-	return retryAssertAfterNavigation(tabCtx, timeout, func(remaining time.Duration) error {
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
+		return err
+	}
+	if err := retryAssertAfterNavigation(tabCtx, timeout, func(remaining time.Duration) error {
 		evalArgs := make([]any, len(args)+1)
 		copy(evalArgs, args)
 		evalArgs[len(args)] = remaining.Milliseconds()
 		return snapshot.EvalAssert(tabCtx, script, evalArgs...)
-	})
+	}); err != nil {
+		return err
+	}
+	return m.guardCurrentURL(tabID, tabCtx)
 }
 
 func (m *Manager) AssertVisible(ctx context.Context, ref string, timeout time.Duration) error {
@@ -2258,7 +2278,10 @@ func (m *Manager) CommitField(ctx context.Context, ref string) error {
 	}
 	defer cancel()
 	m.recordAgentInteraction(tabID, "commit")
-	return snapshot.CommitField(tabCtx, ref)
+	if err := m.runWithPrearmedSettle(tabCtx, 0, func() error { return snapshot.CommitField(tabCtx, ref) }); err != nil {
+		return err
+	}
+	return m.guardCurrentURL(tabID, tabCtx)
 }
 
 func (m *Manager) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYResult, error) {
@@ -2273,9 +2296,15 @@ func (m *Manager) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYRe
 		return snapshot.ClickXYResult{}, err
 	}
 	defer cancel()
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
+		return snapshot.ClickXYResult{}, err
+	}
 	m.recordAgentInteraction(tabID, "click_xy")
 	point, err := snapshot.ResolveClickPoint(tabCtx, x, y)
 	if err != nil {
+		if guardErr := m.guardCurrentURL(tabID, tabCtx); guardErr != nil {
+			return snapshot.ClickXYResult{}, guardErr
+		}
 		return point, err
 	}
 	err = chromedp.Run(tabCtx, chromedp.ActionFunc(func(c context.Context) error {
@@ -2294,16 +2323,26 @@ func (m *Manager) ClickXY(ctx context.Context, x, y float64) (snapshot.ClickXYRe
 		}
 		return input.DispatchMouseEvent(input.MouseReleased, x, y).WithButton(input.Left).WithButtons(0).WithModifiers(modifiers).WithClickCount(1).Do(c)
 	}))
+	if guardErr := m.guardCurrentURL(tabID, tabCtx); guardErr != nil {
+		return snapshot.ClickXYResult{}, guardErr
+	}
 	return point, err
 }
 
 func (m *Manager) WindowBounds(ctx context.Context) (snapshot.WindowBoundsResult, error) {
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return snapshot.WindowBoundsResult{}, err
 	}
 	defer cancel()
-	return snapshot.WindowBounds(tabCtx)
+	result, err := snapshot.WindowBounds(tabCtx)
+	if err != nil {
+		return snapshot.WindowBoundsResult{}, err
+	}
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
+		return snapshot.WindowBoundsResult{}, err
+	}
+	return result, nil
 }
 
 type ConsoleMessage struct {
@@ -2318,11 +2357,17 @@ func (m *Manager) ConsoleMessages(ctx context.Context) ([]ConsoleMessage, error)
 		return nil, err
 	}
 	defer cancel()
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
+		return nil, err
+	}
 	m.ensureConsoleCapture(tabID, tabCtx)
 	m.consoleCaptureMu.Lock()
 	msgs := append([]ConsoleMessage(nil), m.consoleMessages[tabID]...)
 	m.consoleMessages[tabID] = m.consoleMessages[tabID][:0]
 	m.consoleCaptureMu.Unlock()
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
+		return nil, err
+	}
 	return msgs, nil
 }
 
@@ -2360,6 +2405,13 @@ func (m *Manager) ensureConsoleCapture(tabID string, tabCtx context.Context) {
 func (m *Manager) recordConsoleEvent(tabID string, event any) {
 	var message ConsoleMessage
 	switch typed := event.(type) {
+	case *page.EventFrameNavigated:
+		if typed.Frame != nil && typed.Frame.ParentID == "" {
+			m.consoleCaptureMu.Lock()
+			delete(m.consoleMessages, tabID)
+			m.consoleCaptureMu.Unlock()
+		}
+		return
 	case *runtime.EventConsoleAPICalled:
 		message = consoleMessageFromEvent(typed)
 	case *runtime.EventExceptionThrown:
@@ -3367,8 +3419,7 @@ func (m *Manager) observeActionWithBefore(tabID string, tabCtx context.Context, 
 	}
 	if err := m.enforceFinalURL(tabID, tabCtx, snap.URL); err != nil {
 		result.OK = false
-		result.Message = message + "; " + err.Error()
-		result.URL = snap.URL
+		result.Message = err.Error()
 		return result
 	}
 	m.refs.Observe(tabID, snap.Elements)

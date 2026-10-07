@@ -59,18 +59,30 @@ func (m *Manager) OpenIncognito(ctx context.Context, url string) (OpenResult, er
 		m.recordObservation(tabID, TraceActionOpen, finalURL, start, err)
 	}
 	m.refs.SetActive(tabID)
-	ready := m.WaitFor(ctx, "ready", 10*time.Second) == nil
+	ctx = WithTabID(ctx, tabID)
+	condition := "committed"
+	if url == "about:blank" {
+		condition = "ready"
+	}
+	ready := m.WaitFor(ctx, condition, 10*time.Second) == nil
 	// As with Open, do NOT OS-activate the tab; foreground focus stays reserved
 	// for the explicit FocusTab tool.
 	tab, err := m.tabByID(ctx, tabID)
 	if err != nil {
-		if !m.navPolicy.Empty() {
+		if !m.navPolicy.Empty() || FrameReadCheckFromContext(ctx) != nil {
 			verifyErr := fmt.Errorf("verify incognito final destination: %w", err)
 			recordOpen(url, verifyErr)
 			_ = m.CloseContext(ctx, string(ctxID))
 			return OpenResult{}, verifyErr
 		}
 		tab = Tab{ID: tabID, URL: url, Type: "page"}
+	}
+	if check := FrameReadCheckFromContext(ctx); check != nil {
+		if err := check(tab.URL); err != nil {
+			recordOpen(tab.URL, err)
+			_ = m.CloseContext(ctx, string(ctxID))
+			return OpenResult{}, err
+		}
 	}
 	if err := m.navPolicy.Check(tab.URL); err != nil {
 		blocked := fmt.Errorf("incognito open redirected to a disallowed final destination: %w", err)

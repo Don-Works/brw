@@ -285,6 +285,11 @@ func (m *Manager) Cookies(ctx context.Context, params CookieParams) (CookieResul
 	if err != nil {
 		return CookieResult{}, err
 	}
+	if check := FrameReadCheckFromContext(tabCtx); check != nil {
+		if err := check(scopeURL); err != nil {
+			return CookieResult{}, err
+		}
+	}
 
 	action := strings.ToLower(strings.TrimSpace(params.Action))
 	switch action {

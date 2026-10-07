@@ -154,6 +154,9 @@ func (m *Manager) React(ctx context.Context, opts ReactOptions) (ReactResult, er
 	if err := chromedp.Run(tabCtx, chromedp.Evaluate(ReactExpression(req), &out)); err != nil {
 		return ReactResult{}, fmt.Errorf("read the React tree: %w", err)
 	}
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
+		return ReactResult{}, err
+	}
 	out.Action = req.Action
 	out.TabID = tabID
 	return out, nil
