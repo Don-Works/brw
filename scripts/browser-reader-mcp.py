@@ -42,11 +42,7 @@ def valid_id(value):
     return (isinstance(value, int) and not isinstance(value, bool)) or (isinstance(value, str) and len(value) <= 128)
 
 
-def decode(raw):
-    def reject(value):
-        raise ValueError('Non-finite JSON number')
-    return json.loads(raw, parse_constant=reject)
-
+decode = USAGE.decode_json
 
 def validate_arguments(arguments):
     if not isinstance(arguments, dict) or set(arguments) != {'url', 'question'}:

@@ -1,4 +1,6 @@
 import argparse
+import importlib.util
+import pathlib
 import collections
 import hashlib
 import uuid
@@ -11,6 +13,10 @@ import time
 import urllib.error
 import urllib.request
 
+
+_USAGE_SPEC = importlib.util.spec_from_file_location("brw_reader_usage", pathlib.Path(__file__).with_name("browser-reader-usage.py"))
+USAGE = importlib.util.module_from_spec(_USAGE_SPEC)
+_USAGE_SPEC.loader.exec_module(USAGE)
 
 def tool(name, description, properties, required):
     return {'type': 'function', 'function': {'name': name, 'description': description, 'parameters': {'type': 'object', 'properties': properties, 'required': required, 'additionalProperties': False}}}
@@ -111,7 +117,7 @@ def request(endpoint, model, case, structured=False, examples=False, reasoning_e
             phase = 'response_limit'
             raise ValueError('response exceeded 1 MiB')
         phase = 'response_json'
-        answer = json.loads(raw)
+        answer = USAGE.decode_json(raw)
         decoded_at = time.perf_counter()
         result['decode_ms'] = round((decoded_at-read_at)*1000, 3)
         phase = 'response_schema'
@@ -124,7 +130,7 @@ def request(endpoint, model, case, structured=False, examples=False, reasoning_e
         for call in message.get('tool_calls') or []:
             fn = call['function']
             arguments = fn['arguments']
-            actual.append({'name': fn['name'], 'arguments': json.loads(arguments) if isinstance(arguments, str) else arguments})
+            actual.append({'name': fn['name'], 'arguments': USAGE.decode_json(arguments) if isinstance(arguments, str) else arguments})
         result['actual'] = actual
         result['pass'] = actual == [case['expected']]
         usage = answer.get('usage') or {}

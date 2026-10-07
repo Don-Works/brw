@@ -10,6 +10,11 @@ import json
 import uuid
 
 
+def decode_json(raw):
+    def reject(value):
+        raise ValueError('Non-finite JSON number')
+    return json.loads(raw, parse_constant=reject)
+
 def default_directory():
     if sys.platform == 'darwin':
         root = pathlib.Path.home() / 'Library/Application Support'

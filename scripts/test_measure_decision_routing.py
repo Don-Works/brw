@@ -14,7 +14,7 @@ class RoutingTest(unittest.TestCase):
     def test_unique_support_and_ambiguity(self):
         for probabilities, expected in [({'a': 0.95, 'b': 0.1}, 'a'), ({'a': 0.9, 'b': 0.9}, 'refresh'), ({'a': 0.9, 'b': 0.3}, 'refresh'), ({'a': 0.78, 'b': 0.03}, 'refresh')]:
             self.assertEqual(routing.unique_relevant(probabilities, 0.8, 0.2), expected)
-        for probabilities in [{}, {'a': float('nan')}, {'a': 1.1}]:
+        for probabilities in [{}, {'a': float('nan')}, {'a': 1.1}, {'a': True, 'b': False}]:
             with self.assertRaises(ValueError):
                 routing.unique_relevant(probabilities, 0.8, 0.2)
 

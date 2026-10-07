@@ -69,6 +69,10 @@ class DiagnosticsTest(unittest.TestCase):
             row = bench.request('http://localhost/v1', 'fixture-model', bench.cases()[0])
         self.assertEqual(row['outcome'], 'response_json_error')
 
+    def test_provider_nonfinite_numbers_are_response_json_failures(self):
+        with patch.object(bench.urllib.request, 'urlopen', return_value=Response(b'{"choices":[],"usage":{"prompt_tokens":NaN}}')):
+            row = bench.request('http://localhost/v1', 'fixture-model', bench.cases()[0])
+        self.assertEqual(row['outcome'], 'response_json_error')
     def test_transport_failure_is_not_model_quality_failure(self):
         events = []
         with patch.object(bench.urllib.request, 'urlopen', side_effect=TimeoutError('timed out')):
