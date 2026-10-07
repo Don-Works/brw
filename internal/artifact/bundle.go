@@ -15,24 +15,11 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// Failure evidence bundles.
-//
-// A failed run used to return one error string, so diagnosing it meant running
-// the whole thing again with tracing on and hoping the failure reproduced. A
-// bundle collects the evidence in the one pass that already has the failing
-// page in front of it: the action trace, a console summary, bounded network
-// metadata, the semantic snapshot, and a screenshot. Each part is a separate
-// artifact with its own expiry, and the response carries only the manifest id.
-//
-// It is OFF by default at both levels. The capture costs a browser round trip
-// per part on a page that has just misbehaved, and the parts it produces are
-// the most sensitive bytes brw ever stores.
-
 // FailureCapturePolicy is the daemon-level half of the decision.
 type FailureCapturePolicy string
 
 const (
-	// FailureCaptureOff writes nothing on failure. Default.
+	// FailureCaptureOff writes nothing on failure.
 	FailureCaptureOff FailureCapturePolicy = "off"
 	// FailureCaptureRecipe honours the per-recipe opt-in.
 	FailureCaptureRecipe FailureCapturePolicy = "recipe"
@@ -44,25 +31,20 @@ const (
 type EncryptionPolicy string
 
 const (
-	// EncryptOff stores every artifact as plain bytes. Default.
+	// EncryptOff stores every artifact as plain bytes.
 	EncryptOff EncryptionPolicy = "off"
-	// EncryptRecipe encrypts artifacts captured during a private-recipe run,
-	// which is where brw handles a caller's own signed-in pages.
+	// EncryptRecipe encrypts artifacts captured during a private-recipe run, which is where brw handles a caller's own signed-in pages.
 	EncryptRecipe EncryptionPolicy = "recipe"
 	// EncryptAll encrypts every artifact.
 	EncryptAll EncryptionPolicy = "all"
 )
 
-// ErrFailureBundlesDisabled is returned, by name, when a run asks for evidence
-// that policy forbids. A caller must be able to tell "turned off" from "tried
-// and broke"; degrading silently would make a missing bundle unreportable.
+// ErrFailureBundlesDisabled is returned, by name, when a run asks for evidence that policy forbids.
 var ErrFailureBundlesDisabled = errors.New("failure evidence bundles are disabled on this browser host")
 
 const (
 	defaultFailureBundleTTL = time.Hour
-	// A bundle is a diagnostic, not an archive: enough network rows and console
-	// lines to see the shape of the failure, bounded so the parts stay cheap to
-	// store and cheap to read.
+
 	maxBundleTraceEntries   = 200
 	maxBundleNetworkEntries = 50
 	maxBundleConsoleLines   = 100
@@ -94,8 +76,7 @@ func ParseEncryptionPolicy(value string) (EncryptionPolicy, error) {
 	return "", fmt.Errorf("unknown artifact encryption policy %q (valid: off, recipe, all)", value)
 }
 
-// FailureBundleOptions describes one failure. RecipeOptIn is the recipe's own
-// declaration; the daemon policy decides whether it is honoured.
+// FailureBundleOptions describes one failure.
 type FailureBundleOptions struct {
 	Reason        string
 	RecipeID      string
@@ -105,8 +86,7 @@ type FailureBundleOptions struct {
 	TTL           time.Duration
 }
 
-// SetFailureCapturePolicy configures the daemon half of the failure-bundle
-// decision.
+// SetFailureCapturePolicy configures the daemon half of the failure-bundle decision.
 func (s *Service) SetFailureCapturePolicy(policy FailureCapturePolicy) error {
 	parsed, err := ParseFailureCapturePolicy(string(policy))
 	if err != nil {
@@ -116,9 +96,7 @@ func (s *Service) SetFailureCapturePolicy(policy FailureCapturePolicy) error {
 	return nil
 }
 
-// SetEncryptionPolicy configures at-rest encryption. A policy other than off
-// without a store key is refused here, at startup, rather than at the first
-// capture that needed protecting.
+// SetEncryptionPolicy configures at-rest encryption.
 func (s *Service) SetEncryptionPolicy(policy EncryptionPolicy) error {
 	parsed, err := ParseEncryptionPolicy(string(policy))
 	if err != nil {
@@ -131,9 +109,7 @@ func (s *Service) SetEncryptionPolicy(policy EncryptionPolicy) error {
 	return nil
 }
 
-// SetFailureBundleTTL shortens how long evidence is retained. Evidence is the
-// most sensitive thing the store holds, so it is expected to expire well before
-// ordinary artifacts.
+// SetFailureBundleTTL shortens how long evidence is retained.
 func (s *Service) SetFailureBundleTTL(ttl time.Duration) error {
 	if ttl < time.Second {
 		return errors.New("failure bundle TTL must be at least one second")
@@ -153,8 +129,6 @@ func (s *Service) failureCaptureAllowed(optIn bool) bool {
 	}
 }
 
-// shouldEncrypt answers for one capture. A recipe run is recognised by its
-// origin allowlist, which only the deterministic runner installs.
 func (s *Service) shouldEncrypt(ctx context.Context) bool {
 	switch s.encryption {
 	case EncryptAll:
@@ -172,9 +146,7 @@ type bundlePart struct {
 	meta Meta
 }
 
-// CaptureFailureBundle collects the evidence for one failure and returns the
-// manifest handle. Every part is best-effort: a page that has just failed may
-// not answer, and losing the screenshot must not cost the caller the trace.
+// CaptureFailureBundle collects the evidence for one failure and returns the manifest handle.
 func (s *Service) CaptureFailureBundle(ctx context.Context, opts FailureBundleOptions) (Meta, error) {
 	if !s.failureCaptureAllowed(opts.RecipeOptIn) {
 		return Meta{}, ErrFailureBundlesDisabled
@@ -202,11 +174,7 @@ func (s *Service) CaptureFailureBundle(ctx context.Context, opts FailureBundleOp
 		RecipeVersion: opts.RecipeVersion,
 		FailedStep:    opts.FailedStep,
 	}
-	// One main-document probe for the whole bundle. Every part below whose bytes
-	// come from the loaded document is checked against the recipe origin
-	// boundary, so a run that navigated off the allowlist before failing cannot
-	// have that page's console lines or request URLs collected into evidence.
-	// Probing once costs one round trip instead of one per part.
+
 	capture := bundleCapture{ttl: ttl, encrypt: encrypt}
 	continuity, continuityErr := s.beginRecipeCapture(ctx)
 	capture.continuity = continuity
@@ -214,8 +182,7 @@ func (s *Service) CaptureFailureBundle(ctx context.Context, opts FailureBundleOp
 	var parts []bundlePart
 	for _, collector := range s.bundleCollectors() {
 		if collector.pageDerived && continuityErr != nil {
-			// Do not even ask the browser: the answer would be bytes from a
-			// document this run is not allowed to capture.
+
 			manifest.Missing = append(manifest.Missing, MissingPart{
 				Role: collector.role, Reason: bundleFailureReason(continuityErr),
 			})
@@ -236,8 +203,7 @@ func (s *Service) CaptureFailureBundle(ctx context.Context, opts FailureBundleOp
 	}
 	meta, err := s.store.PutManifest(ctx, manifest, ttl, encrypt)
 	if err != nil {
-		// Parts with no manifest are unreachable bytes that would sit out their
-		// whole TTL: nothing knows their ids.
+
 		for _, part := range parts {
 			_ = s.store.Delete(part.meta.ID)
 		}
@@ -246,9 +212,6 @@ func (s *Service) CaptureFailureBundle(ctx context.Context, opts FailureBundleOp
 	return meta, nil
 }
 
-// bundleCapture is what every collector needs: the evidence retention, the
-// at-rest decision, and the main-document identity the page-derived parts are
-// checked against.
 type bundleCapture struct {
 	ttl        time.Duration
 	encrypt    bool
@@ -257,10 +220,7 @@ type bundleCapture struct {
 
 type bundleCollector struct {
 	role string
-	// pageDerived marks a part whose bytes come out of the loaded document, so
-	// it is subject to the recipe origin boundary. The action trace is brw's own
-	// record of the actions it performed and is not gated on where the page
-	// ended up.
+
 	pageDerived bool
 	collect     func(*Service, context.Context, bundleCapture) (Meta, error)
 }
@@ -286,8 +246,7 @@ func (s *Service) putEvidence(ctx context.Context, value any, capture bundleCapt
 	}, bytes.NewReader(data))
 }
 
-// BundleTrace is the recorded action history, already stripped of any value the
-// transport marked sensitive when it recorded it.
+// BundleTrace is the recorded action history, already stripped of any value the transport marked sensitive when it recorded it.
 type BundleTrace struct {
 	Entries  []browser.TraceEntry `json:"entries"`
 	Total    int                  `json:"total"`
@@ -303,9 +262,7 @@ func (s *Service) captureBundleTrace(ctx context.Context, capture bundleCapture)
 			continue
 		}
 		if entry.Redacted {
-			// Belt and braces. The transport already withheld these when it
-			// recorded the action; a bundle is not the place to discover that a
-			// transport forgot.
+
 			entry.Text, entry.Value = "", ""
 		}
 		entry.Text = boundedText(entry.Text, maxBundleTextBytes)
@@ -319,8 +276,7 @@ func (s *Service) captureBundleTrace(ctx context.Context, capture bundleCapture)
 	return s.putEvidence(ctx, BundleTrace{Entries: entries, Total: total, Returned: len(entries)}, capture)
 }
 
-// BundleConsole is a summary, not a dump: level counts for the whole buffer and
-// the tail that is most likely to name the failure.
+// BundleConsole is a summary, not a dump: level counts for the whole buffer and the tail that is most likely to name the failure.
 type BundleConsole struct {
 	Counts   map[string]int           `json:"counts"`
 	Total    int                      `json:"total"`
@@ -333,9 +289,7 @@ func (s *Service) captureBundleConsole(ctx context.Context, capture bundleCaptur
 	if err != nil {
 		return Meta{}, err
 	}
-	// Console text is whatever document is loaded now, and it arrives with no URL
-	// of its own, so the boundary is checked the only way it can be: the main
-	// document was in bounds before the collectors ran and still is.
+
 	if err := capture.continuity.verify(ctx); err != nil {
 		return Meta{}, err
 	}
@@ -353,9 +307,7 @@ func (s *Service) captureBundleConsole(ctx context.Context, capture bundleCaptur
 	}, capture)
 }
 
-// BundleNetworkEntry is metadata only. Request and response bodies are dropped
-// outright rather than truncated, and any header the shared denylist calls a
-// credential is removed name and all.
+// BundleNetworkEntry is metadata only.
 type BundleNetworkEntry struct {
 	Method     string            `json:"method"`
 	URL        string            `json:"url"`
@@ -366,8 +318,6 @@ type BundleNetworkEntry struct {
 	Error      string            `json:"error,omitempty"`
 	Headers    map[string]string `json:"request_headers,omitempty"`
 	// WithheldHeaders names the credential-bearing headers this request carried.
-	// Knowing an Authorization header was present is usually the diagnosis; its
-	// value never is.
 	WithheldHeaders []string `json:"withheld_headers,omitempty"`
 }
 
@@ -382,13 +332,11 @@ func (s *Service) captureBundleNetwork(ctx context.Context, capture bundleCaptur
 	if err != nil {
 		return Meta{}, err
 	}
-	// Request URLs are page-derived bytes like any other, so they are gated on
-	// the same main-document boundary as the snapshot and the screenshot.
+
 	if err := capture.continuity.verify(ctx); err != nil {
 		return Meta{}, err
 	}
-	// The shared denylist first, so a header this bundle chooses to keep can
-	// never carry a live credential even if the classification below changes.
+
 	captured = snapshot.RedactCapturedCredentials(captured)
 	total := len(captured)
 	if len(captured) > maxBundleNetworkEntries {
@@ -455,8 +403,7 @@ func (s *Service) captureBundleScreenshot(ctx context.Context, capture bundleCap
 	if err != nil {
 		return Meta{}, err
 	}
-	// The screenshot carries no URL of its own, so the recipe origin boundary is
-	// checked the only way it can be: identity before and after the capture.
+
 	if err := capture.continuity.verify(ctx); err != nil {
 		return Meta{}, err
 	}
@@ -466,8 +413,6 @@ func (s *Service) captureBundleScreenshot(ctx context.Context, capture bundleCap
 	}, bytes.NewReader(data))
 }
 
-// bundleFailureReason keeps the class of a collection failure without copying a
-// transport message that may quote a URL or page text into the manifest.
 func bundleFailureReason(err error) string {
 	switch {
 	case err == nil:

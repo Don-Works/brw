@@ -27,8 +27,6 @@ import (
 )
 
 // API is implemented locally by Service and remotely by httpclient.Controller.
-// This optional interface keeps the main browser.Controller stable while
-// ensuring upstream MCP processes create and read artifacts on the browser host.
 type API interface {
 	CaptureArtifact(context.Context, CaptureOptions) (Meta, error)
 	ArtifactInfo(context.Context, string) (Meta, error)
@@ -55,10 +53,6 @@ type pdfCapturer interface {
 	CapturePDF(context.Context) ([]byte, error)
 }
 
-// pdfStreamCapturer is the preferred PDF capability. Both first-party
-// transports implement it; the buffered pdfCapturer stays as the fallback for a
-// controller (an upstream HTTP proxy, a custom implementation) that has not got
-// a stream to offer.
 type pdfStreamCapturer interface {
 	CapturePDFStream(context.Context) (io.ReadCloser, error)
 }
@@ -67,9 +61,6 @@ type rawScreenshotCapturer interface {
 	CaptureArtifactScreenshot(context.Context, string) (browser.Screenshot, error)
 }
 
-// videoScreencaster is implemented by transports that can stream compositor
-// frames — direct CDP. The extension bridge has no equivalent, so a bridge
-// profile keeps the screenshot loop and produces byte-identical output.
 type videoScreencaster interface {
 	ScreencastFrames(context.Context, browser.ScreencastOptions) (<-chan browser.ScreencastFrame, func(), error)
 }
@@ -82,18 +73,10 @@ type Service struct {
 	store   *Store
 	browser browser.Controller
 
-	// Extension-backed downloads can live in OS-protected user folders. On
-	// macOS, opening such a path from a background LaunchAgent can block inside
-	// TCC while it waits for a permission prompt; an os.Open goroutine cannot be
-	// cancelled while it is in that syscall. Serialize source opens so retries
-	// fail immediately instead of pinning another goroutine/OS thread each time.
 	downloadOpenGate          chan struct{}
 	downloadSourceOpener      func(string) (*os.File, error)
 	downloadSourceOpenTimeout time.Duration
 
-	// Both policies default to their zero value, which is off. Evidence capture
-	// and at-rest encryption are opt-in because one is expensive and the other
-	// needs an operator-supplied key.
 	failureCapture   FailureCapturePolicy
 	failureBundleTTL time.Duration
 	encryption       EncryptionPolicy
@@ -106,26 +89,9 @@ type recipeCaptureContinuity struct {
 }
 
 const (
-	// Video capture is paced for the requested duration. The recording headroom
-	// leaves bounded time for the browser round trips that feed the frame loop,
-	// without letting a stuck browser call inherit an unbounded caller context.
-	// Encoding, the final mux and persistence are budgeted separately below.
 	videoCaptureMinHeadroom = 2 * time.Second
 	videoCaptureMaxHeadroom = 5 * time.Second
-	// The encoder gets its own allowance, because how long ffmpeg takes to
-	// finish is a property of the host and the frame count, not of how long the
-	// caller asked to record. Charging it against a headroom derived from the
-	// recording duration failed captures that had already done all their work:
-	// on a loaded machine the child-process wait alone measured 2.2s against a
-	// 2.4s total budget, and a real 300-frame VP9 encode measured 4.0-4.8s on an
-	// idle machine against a 5s ceiling.
-	//
-	// videoEncodeBaseBudget covers spawning and reaping the process under
-	// contention, ~3.5x the 2.2s measured on a machine running the whole test
-	// suite alongside several agent sessions. videoEncodePerFrameBudget covers
-	// the encode backlog, ~3x the measured idle rate at the 300-frame maximum.
-	// Both are ceilings on a wedged encoder, not waits: a healthy capture
-	// returns as soon as ffmpeg exits.
+
 	videoEncodeBaseBudget     = 8 * time.Second
 	videoEncodePerFrameBudget = 50 * time.Millisecond
 	videoProcessWaitDelay     = time.Second
@@ -134,9 +100,6 @@ const (
 	videoErrorStderrLimit     = 1000
 	videoContinuityInterval   = 500 * time.Millisecond
 
-	// Opening a completed local browser download should be effectively instant.
-	// A short bound surfaces OS privacy/file-provider stalls while holding the
-	// single-flight gate through the subsequent capture prevents retry fan-out.
 	defaultDownloadSourceOpenTimeout = 3 * time.Second
 )
 
@@ -212,9 +175,7 @@ func (s *Service) captureArtifact(ctx context.Context, opts CaptureOptions, put 
 		put.SourceHash = sourceHash(snap.URL, snap.Title)
 		return s.store.PutContext(ctx, put, bytes.NewReader(data))
 	case "har":
-		// A HAR is the shareable form of a capture, so it becomes an artifact
-		// rather than an inline payload: paged, searchable, TTL-bounded and
-		// never dumped whole into an agent's context.
+
 		requests, err := s.browser.NetworkCapture(ctx, "")
 		if err != nil {
 			return Meta{}, err
@@ -226,7 +187,7 @@ func (s *Service) captureArtifact(ctx context.Context, opts CaptureOptions, put 
 				return Meta{}, err
 			}
 		}
-		// Redaction is ON unless the caller explicitly asks for "none".
+
 		redact := !strings.EqualFold(strings.TrimSpace(opts.Redaction), "none")
 		data, err := json.MarshalIndent(BuildHAR(requests, pageURL, pageTitle, brwVersionForHAR, redact), "", "  ")
 		if err != nil {
@@ -259,9 +220,7 @@ func (s *Service) captureArtifact(ctx context.Context, opts CaptureOptions, put 
 		return s.store.PutContext(ctx, put, bytes.NewReader(data))
 	case "pdf":
 		put.MIMEType = "application/pdf"
-		// The source hash is taken BEFORE the render so the streaming and
-		// buffered paths describe the same page: a stream is still open while
-		// the store consumes it, and probing the page then would race the read.
+
 		put.SourceHash = s.currentSourceHash(ctx)
 		if capture, ok := s.browser.(pdfStreamCapturer); ok {
 			stream, err := capture.CapturePDFStream(ctx)
@@ -303,8 +262,6 @@ func (s *Service) putOptions(opts CaptureOptions) (PutOptions, error) {
 	return PutOptions{Kind: opts.Kind, Redaction: opts.Redaction, TTL: opts.TTL}, nil
 }
 
-// putOptionsFor is putOptions plus the per-context encryption decision, which
-// needs the recipe origin allowlist that only the request context carries.
 func (s *Service) putOptionsFor(ctx context.Context, opts CaptureOptions) (PutOptions, error) {
 	put, err := s.putOptions(opts)
 	if err != nil {
@@ -337,9 +294,7 @@ func (s *Service) ReadArtifact(_ context.Context, id string, offset int64, maxBy
 		chunk.Encoding = "utf-8"
 		chunk.Text = string(data)
 	} else {
-		// A byte window can bisect a multi-byte rune even when the complete text
-		// artifact is valid UTF-8. Return exact base64 bytes for that window rather
-		// than letting JSON silently replace them with U+FFFD.
+
 		chunk.Base64 = base64.StdEncoding.EncodeToString(data)
 	}
 	return chunk, nil
@@ -370,11 +325,7 @@ func (s *Service) captureDownload(ctx context.Context, opts CaptureOptions, put 
 		}
 		return Meta{}, errors.New("download capture is unavailable on this browser transport")
 	}
-	// A transport can record downloads and still report no path for them: in a
-	// browser brw did not start it leaves the destination alone, so there is no
-	// brw-owned file to capture. Without this the capture falls through to
-	// "matching completed download was not found", which reads as a selector
-	// mistake rather than as the capability it is.
+
 	if !result.FilePaths {
 		if note := strings.TrimSpace(result.Note); note != "" {
 			return Meta{}, errors.New("download capture is unavailable on this browser transport: " + note)
@@ -392,9 +343,7 @@ func (s *Service) captureDownload(ctx context.Context, opts CaptureOptions, put 
 		if opts.DownloadGUID == "" && item.SuggestedFilename != opts.Filename {
 			continue
 		}
-		// Direct CDP records the initiating target. Unknown provenance remains
-		// compatible with transports that cannot report it, while a known mismatch
-		// is never allowed to capture another tab's staged file.
+
 		if tabID != "" && (item.TabID != "" && item.TabID != tabID || recipeScoped && item.TabID == "") {
 			continue
 		}
@@ -416,10 +365,7 @@ func (s *Service) captureDownload(ctx context.Context, opts CaptureOptions, put 
 	return Meta{}, errors.New("matching completed download was not found")
 }
 
-// CaptureCompletedDownload preserves the causality between a recipe's
-// pre-armed download postcondition and its following capture step. BrowserSurface
-// hands the exact completed entry it observed to this browser-host-only method
-// instead of reselecting from a registry that may contain same-name downloads.
+// CaptureCompletedDownload preserves the causality between a recipe's pre-armed download postcondition and its following capture step.
 func (s *Service) CaptureCompletedDownload(ctx context.Context, item browser.DownloadEntry, opts CaptureOptions) (Meta, error) {
 	put, err := s.putOptionsFor(ctx, opts)
 	if err != nil {
@@ -475,9 +421,7 @@ func (s *Service) captureDownloadEntry(ctx context.Context, item browser.Downloa
 	if err != nil {
 		return Meta{}, err
 	}
-	// The browser supplies a host path, but another local process could replace
-	// that path between Lstat and Open. Persist only the exact regular file we
-	// inspected; reads from the open descriptor remain stable after this check.
+
 	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
 		return Meta{}, errors.New("download path changed before capture")
 	}
@@ -503,8 +447,7 @@ func (s *Service) captureDownloadEntry(ctx context.Context, item browser.Downloa
 	}
 	cleaner, ok := s.browser.(managedDownloadCleaner)
 	if !ok {
-		// A transport without an explicit managed-staging capability owns no
-		// source files; preserve the browser/user original.
+
 		return meta, nil
 	}
 	_, cleanupErr := cleaner.CleanupManagedDownload(item)
@@ -520,12 +463,6 @@ type downloadOpenResult struct {
 	err  error
 }
 
-// openDownloadSource isolates the potentially uninterruptible os.Open syscall
-// in one bounded worker. Go cannot forcibly cancel a syscall already blocked in
-// the kernel, but the request can return and the occupied gate makes every retry
-// fail fast. A successful caller holds the gate through artifact persistence;
-// once a timed-out worker unblocks it closes the unused file and releases the
-// gate, allowing captures to recover without restarting the daemon.
 func (s *Service) openDownloadSource(ctx context.Context, sourcePath string) (*os.File, func(), error) {
 	if ctx == nil {
 		return nil, nil, errors.New("download capture context is nil")
@@ -566,8 +503,7 @@ func (s *Service) openDownloadSource(ctx context.Context, sourcePath string) (*o
 		}
 		select {
 		case result <- downloadOpenResult{file: file, err: err}:
-			// A successful handoff transfers the gate to the request. An error
-			// released it above before publishing the result.
+
 		case <-openCtx.Done():
 			if file != nil {
 				_ = file.Close()
@@ -610,11 +546,7 @@ func (s *Service) captureVideo(ctx context.Context, opts CaptureOptions, put Put
 	if frames > 300 {
 		return Meta{}, errors.New("video capture is limited to 300 frames; reduce duration_ms or fps")
 	}
-	// Two deadlines, because the two phases fail for different reasons. opCtx is
-	// the ceiling on the whole operation and owns the encoder process; videoCtx
-	// bounds the recording inside it. Keeping the encoder on opCtx means a
-	// capture that recorded every frame is not thrown away because the child
-	// took longer to exit than the recording took to run.
+
 	opCtx, cancelOp := context.WithTimeout(
 		ctx, videoCaptureBudget(opts.DurationMS)+videoEncodeBudget(frames))
 	defer cancelOp()
@@ -645,9 +577,7 @@ func (s *Service) captureVideo(ctx context.Context, opts CaptureOptions, put Put
 		"-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p", "-an",
 		"-fs", strconv.FormatInt(s.store.maxArtifactBytes, 10), output,
 	)
-	// CommandContext terminates the encoder when the operation deadline expires.
-	// WaitDelay additionally bounds Wait when a faulty executable leaves inherited
-	// pipes open in a descendant process.
+
 	command.WaitDelay = videoProcessWaitDelay
 	stdin, err := command.StdinPipe()
 	if err != nil {
@@ -670,10 +600,6 @@ func (s *Service) captureVideo(ctx context.Context, opts CaptureOptions, put Put
 		}
 	}()
 
-	// Prefer the compositor. Chrome pushes a frame only when the page changes,
-	// so the per-frame Page.captureScreenshot round trip disappears; the tick
-	// below still writes one frame per 1/FPS so the encoded duration and frame
-	// count are exactly what the caller asked for, static page or not.
 	var (
 		screencast <-chan browser.ScreencastFrame
 		stopCast   func()
@@ -687,8 +613,7 @@ func (s *Service) captureVideo(ctx context.Context, opts CaptureOptions, put Put
 			screencast, stopCast = ch, stop
 			defer stopCast()
 		}
-		// A screencast that will not start is not a capture failure: fall
-		// through to the screenshot loop rather than losing the video.
+
 	}
 
 	interval := time.Second / time.Duration(opts.FPS)
@@ -706,8 +631,7 @@ func (s *Service) captureVideo(ctx context.Context, opts CaptureOptions, put Put
 		}
 		var shot browser.Screenshot
 		if screencast != nil {
-			// Drain to the newest frame, then reuse it if the page has not
-			// repainted since the last tick.
+
 			for drained := false; !drained; {
 				select {
 				case f, open := <-screencast:
@@ -722,8 +646,7 @@ func (s *Service) captureVideo(ctx context.Context, opts CaptureOptions, put Put
 				}
 			}
 			if latest == nil {
-				// No frame yet (first tick on a page that has not painted).
-				// Block briefly rather than encode nothing.
+
 				select {
 				case f, open := <-screencast:
 					if open {
@@ -754,10 +677,7 @@ func (s *Service) captureVideo(ctx context.Context, opts CaptureOptions, put Put
 			}
 			return Meta{}, fmt.Errorf("stream video frame %d: %w", frame, err)
 		}
-		// The transport identity contains a monotonic replacement-document epoch,
-		// so the final check is sufficient for safety even after A -> B -> A/BFCache.
-		// Poll at a bounded cadence only to stop wasting encoder work soon after a
-		// transition; checking every 30-fps frame would double browser round trips.
+
 		if continuity != nil && time.Since(lastContinuityCheck) >= videoContinuityInterval {
 			if err := continuity.verify(videoCtx); err != nil {
 				if videoCtx.Err() != nil {
@@ -768,9 +688,7 @@ func (s *Service) captureVideo(ctx context.Context, opts CaptureOptions, put Put
 			lastContinuityCheck = time.Now()
 		}
 	}
-	// From here only the operation ceiling applies, so a slow encoder is judged
-	// against its own allowance rather than against the recording window, which
-	// may already have expired. The screencast is released by the deferred stop.
+
 	closeErr := stdin.Close()
 	err = command.Wait()
 	waited = true
@@ -806,14 +724,9 @@ func (s *Service) captureVideo(ctx context.Context, opts CaptureOptions, put Put
 	}
 	defer file.Close()
 	put.MIMEType = "video/webm"
-	// Persistence belongs to the operation, not to the recording window: the
-	// frames are already captured and the encode already done, so finishing the
-	// write must not be judged against a deadline sized for the frame loop.
+
 	put.SourceHash = s.currentSourceHash(opCtx)
-	// PutContext is the concurrency-correct quota gate. Deliberately do not do
-	// an unlocked quota preflight before encoding: without a Store reservation
-	// transaction it can only race concurrent writers and promise capacity that
-	// no longer exists by commit time.
+
 	return s.store.PutContext(opCtx, put, file)
 }
 
@@ -837,9 +750,7 @@ func (s *Service) captureVideoScreenshot(ctx context.Context) (browser.Screensho
 	}()
 	select {
 	case <-ctx.Done():
-		// Browser transports are expected to honor ctx. Selecting here still
-		// bounds the artifact request if a faulty implementation does not; the
-		// buffered result channel lets a late cooperative return exit cleanly.
+
 		return browser.Screenshot{}, ctx.Err()
 	case value := <-finished:
 		if err := ctx.Err(); err != nil {
@@ -849,9 +760,6 @@ func (s *Service) captureVideoScreenshot(ctx context.Context) (browser.Screensho
 	}
 }
 
-// videoCaptureBudget bounds the RECORDING phase: the paced frame loop plus the
-// browser round trips that feed it. It deliberately does not cover the encoder
-// — see videoEncodeBudget.
 func videoCaptureBudget(durationMS int) time.Duration {
 	duration := time.Duration(durationMS) * time.Millisecond
 	headroom := duration / 5
@@ -864,10 +772,6 @@ func videoCaptureBudget(durationMS int) time.Duration {
 	return duration + headroom
 }
 
-// videoEncodeBudget bounds the encoder finishing after the last frame is
-// written. It scales with the frames it has to encode, not with the recording
-// duration: a 30s capture at 1fps hands ffmpeg 30 frames, and a 10s capture at
-// 30fps hands it 300.
 func videoEncodeBudget(frames int) time.Duration {
 	if frames < 1 {
 		frames = 1
@@ -885,9 +789,6 @@ func videoCaptureContextError(parent, operation context.Context) error {
 	return errors.New("video capture stopped without a context error")
 }
 
-// videoEncodeContextError names the phase that ran out, so an operator can tell
-// a capture that never finished recording from one that recorded everything and
-// then lost the encode.
 func videoEncodeContextError(parent, operation context.Context, frames int) error {
 	if err := parent.Err(); err != nil {
 		return err
@@ -900,9 +801,6 @@ func videoEncodeContextError(parent, operation context.Context, frames int) erro
 	return errors.New("video encode stopped without a context error")
 }
 
-// boundedTailBuffer retains only the most recent limit bytes while always
-// reporting a complete write. Child-process stderr can therefore never grow
-// service memory without bound or deadlock the encoder after the limit is hit.
 type boundedTailBuffer struct {
 	buf   []byte
 	limit int
@@ -935,11 +833,6 @@ func (b *boundedTailBuffer) Write(p []byte) (int, error) {
 
 func (b *boundedTailBuffer) String() string { return string(b.buf) }
 
-// resolveFFmpegPath handles the deliberately sparse PATH used by service
-// managers such as launchd. Interactive shells commonly find Homebrew's
-// ffmpeg while the same signed browser host cannot, which would make video
-// artifacts work in tests but fail after installation. An explicit override
-// wins; otherwise use PATH and then the conventional package-manager paths.
 func resolveFFmpegPath() (string, error) {
 	if override := strings.TrimSpace(os.Getenv("BRW_FFMPEG_PATH")); override != "" {
 		if !filepath.IsAbs(override) {
@@ -1071,8 +964,7 @@ func (s *Service) currentSourceHash(ctx context.Context) string {
 func (s *Service) beginRecipeCapture(ctx context.Context) (*recipeCaptureContinuity, error) {
 	allowed, guarded := browser.AllowedOriginsFromContext(ctx)
 	if !guarded {
-		// Ordinary/manual artifact capture keeps its existing behavior and incurs
-		// no document-identity round trip.
+
 		return nil, nil
 	}
 	provider, ok := s.browser.(browser.DocumentIdentityProvider)
@@ -1084,8 +976,7 @@ func (s *Service) beginRecipeCapture(ctx context.Context) (*recipeCaptureContinu
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
-		// Transport errors can include current URLs. Preserve the failure class but
-		// never copy those details into recipe/MCP results.
+
 		return nil, errors.New("could not verify the main document for recipe artifact capture")
 	}
 	continuity := &recipeCaptureContinuity{provider: provider, allowed: allowed, start: identity}
@@ -1134,10 +1025,6 @@ func (c *recipeCaptureContinuity) validate(identity browser.DocumentIdentity) er
 	return errors.New("recipe artifact capture origin is not allowed")
 }
 
-// guardCapturedPageURL checks the URL returned with the captured payload, not
-// only a separate location.origin probe before/after capture. This closes the
-// race where navigation occurs between the probe and Read/Snapshot and the
-// transport returns bytes from a disallowed document.
 func guardCapturedPageURL(ctx context.Context, rawURL string) error {
 	allowed, guarded := browser.AllowedOriginsFromContext(ctx)
 	if !guarded {

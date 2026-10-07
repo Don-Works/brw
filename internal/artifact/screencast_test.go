@@ -13,8 +13,6 @@ import (
 	"github.com/Don-Works/brw/internal/readability"
 )
 
-// screencastFakeBrowser streams compositor frames and counts every screenshot
-// round trip, so a test can prove the video path stopped making them.
 type screencastFakeBrowser struct {
 	serviceFakeBrowser
 	frames      [][]byte
@@ -54,9 +52,6 @@ func newScreencastFake(t *testing.T, failStart bool) *screencastFakeBrowser {
 	}
 }
 
-// A static page repaints once. The encoder still writes one frame per tick so
-// the video keeps its requested duration, but every tick after the first
-// reuses the compositor's last frame instead of asking the browser again.
 func TestVideoUsesScreencastInsteadOfScreenshotRoundTrips(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("video fixtures are POSIX")
@@ -83,7 +78,6 @@ func TestVideoUsesScreencastInsteadOfScreenshotRoundTrips(t *testing.T) {
 	}
 }
 
-// A transport that cannot start a screencast must still produce a video.
 func TestVideoFallsBackToScreenshotsWhenScreencastRefuses(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("video fixtures are POSIX")
@@ -118,8 +112,6 @@ func pageReadFixture() readability.PageRead {
 	return readability.PageRead{URL: "https://example.test", Title: "Video"}
 }
 
-// stubFFmpegAcceptingFrames stands in for the encoder: drain stdin, write a
-// non-empty file at the output path (ffmpeg's last argument), succeed.
 func stubFFmpegAcceptingFrames(t *testing.T) {
 	t.Helper()
 	stub := writeExecutableFixture(t, `#!/bin/sh

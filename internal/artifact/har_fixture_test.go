@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -34,8 +35,7 @@ func TestParseHARFixtureRoundTripsAnExportedHAR(t *testing.T) {
 	if entry.Status != 200 || entry.Body != `{"ok":true}` {
 		t.Fatalf("response not round-tripped: %+v", entry)
 	}
-	// Redaction is a property of the recording. A replay of a redacted HAR has
-	// to carry the placeholder, not somehow recover the request body.
+
 	if entry.RequestBody != redactedPlaceholder {
 		t.Fatalf("request body = %q, want the recorded redaction placeholder", entry.RequestBody)
 	}
@@ -64,9 +64,6 @@ func TestParseHARFixtureRejectsWhatItCannotReplay(t *testing.T) {
 	}
 }
 
-// Replaying framing headers recorded against a different body would describe the
-// response wrongly, and replaying Set-Cookie would write a recorded session into
-// the profile running the fixture.
 func TestParseHARFixtureDropsHeadersThatMustNotBeReplayed(t *testing.T) {
 	raw := []byte(`{"log":{"version":"1.2","entries":[{"request":{"method":"GET","url":"https://x.test/a"},
 		"response":{"status":200,"headers":[
@@ -94,8 +91,6 @@ func TestParseHARFixtureDropsHeadersThatMustNotBeReplayed(t *testing.T) {
 	}
 }
 
-// A HAR is paged out of the artifact store like any other artifact, so the
-// loader has to reassemble one that does not fit in a single read window.
 func TestLoadHARFixtureReadsAStoredHARAcrossReadWindows(t *testing.T) {
 	requests := make([]snapshot.CapturedRequest, 0, 400)
 	for i := 0; i < 400; i++ {
@@ -134,8 +129,6 @@ func TestLoadHARFixtureReadsAStoredHARAcrossReadWindows(t *testing.T) {
 	}
 }
 
-// Pointing a replay at a screenshot would otherwise fail deep inside the JSON
-// decoder with a message about the bytes rather than about the mistake.
 func TestLoadHARFixtureRefusesAnArtifactOfAnotherKind(t *testing.T) {
 	store, err := NewStore(Config{Root: t.TempDir()})
 	if err != nil {
@@ -152,5 +145,42 @@ func TestLoadHARFixtureRefusesAnArtifactOfAnotherKind(t *testing.T) {
 	_, err = LoadHARFixture(context.Background(), svc, meta.ID)
 	if err == nil || !strings.Contains(err.Error(), "not a har") {
 		t.Fatalf("error = %v, want one naming the artifact kind", err)
+	}
+}
+
+type malformedChunkAPI struct {
+	API
+	chunk Chunk
+	calls int
+}
+
+func (f *malformedChunkAPI) ArtifactInfo(context.Context, string) (Meta, error) {
+	return Meta{Kind: "har", SizeBytes: 1}, nil
+}
+func (f *malformedChunkAPI) ReadArtifact(context.Context, string, int64, int) (Chunk, error) {
+	f.calls++
+	if f.calls > 1 {
+		return Chunk{}, errors.New("read repeated without progress")
+	}
+	return f.chunk, nil
+}
+func TestLoadHARFixtureBoundsFinalChunkAndRequiresProgress(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		chunk Chunk
+		want  string
+	}{
+		{"non-progressing", Chunk{Encoding: "utf-8", Text: "x", SizeBytes: 1, More: true, NextOffset: 0}, "stopped returning bytes"},
+		{"oversize final", Chunk{Encoding: "utf-8", Text: `{"log":{"version":"1.2","entries":[{"request":{"url":"https://x.test"},"response":{"content":{"text":"` + strings.Repeat("x", maxHARFixtureBytes) + `"}}}]}}`}, "replay limit"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			api := &malformedChunkAPI{chunk: test.chunk}
+			if _, err := LoadHARFixture(context.Background(), api, "fixture"); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error %v, want %s", err, test.want)
+			}
+			if api.calls != 1 {
+				t.Fatalf("read %d times without validated progress", api.calls)
+			}
+		})
 	}
 }

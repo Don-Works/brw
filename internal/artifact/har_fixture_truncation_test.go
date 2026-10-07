@@ -7,10 +7,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// The in-page capture keeps the first 2 KiB of a response. Replaying that as
-// though it were the whole body hands the page a JSON document that stops
-// mid-string, and the resulting SyntaxError names the page rather than the
-// fixture, so the clip has to be identified when the HAR is decoded.
 func TestParseHARFixtureFlagsAClippedResponseBody(t *testing.T) {
 	clipped := strings.Repeat("x", 2048) + snapshot.BodyTruncationMarker
 	tests := []struct {
@@ -53,8 +49,6 @@ func TestParseHARFixtureFlagsAClippedResponseBody(t *testing.T) {
 	}
 }
 
-// An externally produced HAR states the real body size instead of appending a
-// marker, so a text shorter than the size it declares is the same fact.
 func TestParseHARFixtureFlagsABodyShorterThanItsDeclaredSize(t *testing.T) {
 	raw := []byte(`{"log":{"version":"1.2","entries":[
 		{"request":{"method":"GET","url":"https://x.test/partial"},
@@ -73,8 +67,6 @@ func TestParseHARFixtureFlagsABodyShorterThanItsDeclaredSize(t *testing.T) {
 	}
 }
 
-// HAR 1.2 stores headers as a list because Link, Vary and Www-Authenticate may
-// legally repeat. Collapsing them into a map replays only the last one.
 func TestParseHARFixtureKeepsRepeatedResponseHeaders(t *testing.T) {
 	raw := []byte(`{"log":{"version":"1.2","entries":[{"request":{"method":"GET","url":"https://x.test/a"},
 		"response":{"status":200,"headers":[
@@ -107,12 +99,6 @@ func TestParseHARFixtureKeepsRepeatedResponseHeaders(t *testing.T) {
 	}
 }
 
-// The capture clips a REQUEST body at the same 2 KiB cap as a response, and a
-// request body is a match key. Served as though it were whole, the recording is
-// a prefix no live request can equal, so a body-keyed replay of such a capture
-// misses every request and - under the default on_miss:"passthrough" - runs the
-// whole test against the real backend. The clip has to be identified when the
-// HAR is decoded so the install can be refused instead.
 func TestParseHARFixtureFlagsAClippedRequestBody(t *testing.T) {
 	clipped := strings.Repeat("p", snapshot.BodyCapBytes) + snapshot.BodyTruncationMarker
 	tests := []struct {
@@ -155,8 +141,6 @@ func TestParseHARFixtureFlagsAClippedRequestBody(t *testing.T) {
 	}
 }
 
-// An externally produced HAR states the request's real bodySize rather than
-// appending a marker, so a postData.text shorter than that is the same fact.
 func TestParseHARFixtureFlagsARequestBodyShorterThanItsDeclaredSize(t *testing.T) {
 	raw := []byte(`{"log":{"version":"1.2","entries":[
 		{"request":{"method":"POST","url":"https://x.test/partial","bodySize":4096,

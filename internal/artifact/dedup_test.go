@@ -14,9 +14,6 @@ import (
 	"time"
 )
 
-// TestIdenticalCapturesShareOneBlobWithIndependentHandles is the whole dedup
-// contract in one place: same bytes stored once, handles that stay separate
-// objects with separate lifetimes, and a quota that is charged once.
 func TestIdenticalCapturesShareOneBlobWithIndependentHandles(t *testing.T) {
 	store := newTestStore(t, 1<<20, 4<<20)
 	payload := bytes.Repeat([]byte("duplicate-capture-line\n"), 512)
@@ -48,8 +45,6 @@ func TestIdenticalCapturesShareOneBlobWithIndependentHandles(t *testing.T) {
 		t.Fatal("identical payloads were stored as two separate blobs")
 	}
 
-	// Two handles, one payload: the quota must see one payload. Charging twice
-	// would shrink the store by bytes that were never written.
 	live, _, err := store.scanLocked()
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +53,6 @@ func TestIdenticalCapturesShareOneBlobWithIndependentHandles(t *testing.T) {
 		t.Fatalf("quota charge = %d bytes, want %d for one shared payload", used, len(payload))
 	}
 
-	// Expiry is per handle, not per payload.
 	if !second.ExpiresAt.Before(first.ExpiresAt) {
 		t.Fatalf("handles share an expiry: %s vs %s", first.ExpiresAt, second.ExpiresAt)
 	}
@@ -78,10 +72,6 @@ func TestIdenticalCapturesShareOneBlobWithIndependentHandles(t *testing.T) {
 	}
 }
 
-// TestDeduplicatedHandlesStayUnlinkableAndNonEnumerable proves dedup did not
-// turn the store into an oracle. It asserts against blobs that really are
-// shared — remove the hard link and the shared-inode precondition fails — so it
-// can detect the dedup code regressing, not only newID staying random.
 func TestDeduplicatedHandlesStayUnlinkableAndNonEnumerable(t *testing.T) {
 	store := newTestStore(t, 1<<20, 8<<20)
 	payload := []byte("shared-capture-body")
@@ -106,8 +96,6 @@ func TestDeduplicatedHandlesStayUnlinkableAndNonEnumerable(t *testing.T) {
 		metas = append(metas, meta)
 	}
 
-	// The precondition: these handles really do share one payload, so everything
-	// below is asserted about deduplicated blobs and not about unrelated ones.
 	base, err := os.Stat(store.blobPath(metas[0].ID))
 	if err != nil {
 		t.Fatal(err)
@@ -122,8 +110,6 @@ func TestDeduplicatedHandlesStayUnlinkableAndNonEnumerable(t *testing.T) {
 		}
 	}
 
-	// A shared payload must not give one handle a route to the others: the
-	// on-disk metadata carries the digest and nothing that names another handle.
 	for index, meta := range metas {
 		raw, readErr := os.ReadFile(store.metaPath(meta.ID))
 		if readErr != nil {
@@ -139,8 +125,6 @@ func TestDeduplicatedHandlesStayUnlinkableAndNonEnumerable(t *testing.T) {
 		}
 	}
 
-	// Nothing on disk is addressed by content, so the directory listing itself
-	// cannot answer "have these bytes been captured?".
 	entries, err := os.ReadDir(store.Root())
 	if err != nil {
 		t.Fatal(err)
@@ -151,7 +135,6 @@ func TestDeduplicatedHandlesStayUnlinkableAndNonEnumerable(t *testing.T) {
 		}
 	}
 
-	// The obvious guesses a content-addressed store would answer.
 	for _, guess := range []string{
 		"art_" + contentAddress[:32],
 		"art_" + contentAddress[32:],
@@ -162,14 +145,10 @@ func TestDeduplicatedHandlesStayUnlinkableAndNonEnumerable(t *testing.T) {
 	}
 }
 
-// TestQuotaChargesPayloadsThatAreNotActuallyShared covers the case dedup does
-// not reach: two real files with the same digest, which is what a failed
-// os.Link leaves behind and what a store written before dedup is full of.
-// Charging those once would let the store accept writes past its total.
 func TestQuotaChargesPayloadsThatAreNotActuallyShared(t *testing.T) {
 	payload := bytes.Repeat([]byte("unshared-copy\n"), 64)
 	const copies = 2
-	// Room for the two unshared copies and nothing more.
+
 	store := newTestStore(t, int64(len(payload)), int64(copies*len(payload)+8))
 
 	first, err := store.Put(PutOptions{Kind: "text", MIMEType: "text/plain"}, bytes.NewReader(payload))
@@ -199,7 +178,6 @@ func TestQuotaChargesPayloadsThatAreNotActuallyShared(t *testing.T) {
 			used, copies*len(payload))
 	}
 
-	// And the miscount has to be visible where it matters: the store is full.
 	if _, err := store.Put(PutOptions{Kind: "text", MIMEType: "text/plain"},
 		bytes.NewReader(bytes.Repeat([]byte("other\n"), 64))); err == nil ||
 		!strings.Contains(err.Error(), "quota") {
@@ -207,9 +185,6 @@ func TestQuotaChargesPayloadsThatAreNotActuallyShared(t *testing.T) {
 	}
 }
 
-// cloneArtifactAsSeparateFile writes a second handle over the same bytes as a
-// real second file, which is what a filesystem without hard links, or any brw
-// that predates dedup, leaves in the store.
 func cloneArtifactAsSeparateFile(t *testing.T, store *Store, source Meta) string {
 	t.Helper()
 	id, err := newID()
@@ -235,9 +210,6 @@ func cloneArtifactAsSeparateFile(t *testing.T, store *Store, source Meta) string
 	return id
 }
 
-// TestOrphanBlobsStillOccupyTheQuota keeps a crash from hiding bytes. A blob
-// whose metadata never landed is real disk inside its reconciliation grace
-// window, and a quota that cannot see it can be walked past one crash at a time.
 func TestOrphanBlobsStillOccupyTheQuota(t *testing.T) {
 	store := newTestStore(t, 1<<20, 4<<20)
 	orphan := bytes.Repeat([]byte("orphaned-capture\n"), 100)
@@ -261,9 +233,6 @@ func TestOrphanBlobsStillOccupyTheQuota(t *testing.T) {
 	}
 }
 
-// TestFullStoreStillAcceptsBytesItAlreadyHolds is the other side of charging by
-// identity: a capture that will be a hard link costs nothing, so the quota must
-// not reject it on a store with no room for a second copy.
 func TestFullStoreStillAcceptsBytesItAlreadyHolds(t *testing.T) {
 	payload := bytes.Repeat([]byte("repeat-capture\n"), 128)
 	store := newTestStore(t, int64(len(payload)), int64(len(payload))+16)
@@ -272,7 +241,7 @@ func TestFullStoreStillAcceptsBytesItAlreadyHolds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Nothing else fits.
+
 	if _, err := store.Put(PutOptions{Kind: "text", MIMEType: "text/plain"},
 		bytes.NewReader(bytes.Repeat([]byte("different\n"), 128))); err == nil {
 		t.Fatal("the store was supposed to be full")
@@ -295,9 +264,6 @@ func TestFullStoreStillAcceptsBytesItAlreadyHolds(t *testing.T) {
 	}
 }
 
-// TestPutDoesNotHoldTheStoreLockAcrossItsSource is what moving the copy out of
-// the critical section buys. A capture source is a browser round trip, and an
-// Info or Delete must not wait behind one.
 func TestPutDoesNotHoldTheStoreLockAcrossItsSource(t *testing.T) {
 	store := newTestStore(t, 1<<20, 8<<20)
 	existing, err := store.Put(PutOptions{Kind: "text", MIMEType: "text/plain"}, strings.NewReader("already here"))
@@ -330,8 +296,6 @@ func TestPutDoesNotHoldTheStoreLockAcrossItsSource(t *testing.T) {
 	}
 }
 
-// gatedReader reports that it has been read from, then blocks until released,
-// standing in for a browser that has not finished answering.
 type gatedReader struct {
 	started  chan struct{}
 	release  chan struct{}
@@ -354,9 +318,6 @@ func (r *gatedReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// TestStagingSurvivesAConcurrentOrphanSweep guards the consequence of copying
-// outside the lock: another capture's reconciliation pass must not reclaim a
-// staging file that is still being written, however long the transfer takes.
 func TestStagingSurvivesAConcurrentOrphanSweep(t *testing.T) {
 	store := newTestStore(t, 1<<20, 8<<20)
 	source := &gatedReader{started: make(chan struct{}), release: make(chan struct{}), body: []byte("long transfer body")}
@@ -367,8 +328,6 @@ func TestStagingSurvivesAConcurrentOrphanSweep(t *testing.T) {
 	}()
 	<-source.started
 
-	// Age the staging file well past orphanGrace, which is what a transfer slower
-	// than five minutes looks like to the sweep.
 	staging := findStagingFile(t, store)
 	old := time.Now().Add(-2 * orphanGrace)
 	if err := os.Chtimes(staging, old, old); err != nil {

@@ -8,13 +8,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
-// fixtureStoreKey is deliberately a flat repeated byte. It is key-shaped, has
-// no entropy, and cannot be mistaken for a real key that escaped into the tree.
 func fixtureStoreKey() []byte { return bytes.Repeat([]byte{0x2a}, MinEncryptionKeyBytes) }
 
 func newEncryptedTestStore(t *testing.T, maxArtifact, maxTotal int64) *Store {
@@ -29,10 +28,6 @@ func newEncryptedTestStore(t *testing.T, maxArtifact, maxTotal int64) *Store {
 	return store
 }
 
-// TestEncryptedArtifactRoundTripsWithNoPlaintextOnDisk drives the real write and
-// read paths at every interesting size around the chunk boundary, and checks the
-// property that justifies the feature: the payload never lands on disk in the
-// clear, not even transiently while the capture is being written.
 func TestEncryptedArtifactRoundTripsWithNoPlaintextOnDisk(t *testing.T) {
 	const sentinel = "encrypted-capture-sentinel"
 	tests := []struct {
@@ -69,7 +64,6 @@ func TestEncryptedArtifactRoundTripsWithNoPlaintextOnDisk(t *testing.T) {
 				assertNoPlaintextOnDisk(t, store.Root(), sentinel)
 			}
 
-			// Whole-payload read back through the public bounded-read path.
 			var got []byte
 			for offset := int64(0); ; {
 				window, _, more, err := store.Read(meta.ID, offset, 4096)
@@ -86,8 +80,6 @@ func TestEncryptedArtifactRoundTripsWithNoPlaintextOnDisk(t *testing.T) {
 				t.Fatalf("round trip returned %d bytes, want %d", len(got), len(payload))
 			}
 
-			// An offset read must decrypt only the window it was asked for and
-			// still land on the right bytes.
 			if len(payload) > blobChunkSize+10 {
 				offset := int64(blobChunkSize + 5)
 				window, _, _, err := store.Read(meta.ID, offset, 32)
@@ -102,11 +94,6 @@ func TestEncryptedArtifactRoundTripsWithNoPlaintextOnDisk(t *testing.T) {
 	}
 }
 
-// assertNoPlaintextOnDisk walks every file the store owns, temporary files
-// included. It is called after the write as well as from inside it — see
-// TestEncryptedCaptureIsNeverStagedInTheClear, which scans the root while the
-// capture is mid-copy, because "encrypted at rest" is worth nothing if the
-// plaintext is staged in the clear first and only encrypted on commit.
 func assertNoPlaintextOnDisk(t *testing.T, root, sentinel string) {
 	t.Helper()
 	entries, err := os.ReadDir(root)
@@ -127,9 +114,6 @@ func assertNoPlaintextOnDisk(t *testing.T, root, sentinel string) {
 	}
 }
 
-// TestEncryptedArtifactSearchAndTamperDetection covers the two things an
-// authenticated format buys: search still works through the decrypting reader,
-// and a modified or truncated blob is refused rather than partially returned.
 func TestEncryptedArtifactSearchAndTamperDetection(t *testing.T) {
 	store := newEncryptedTestStore(t, 1<<20, 4<<20)
 	payload := "line one\nInvoice_2026_09 paid\nline three\n"
@@ -178,9 +162,6 @@ func flipByte(data []byte, index int) []byte {
 	return out
 }
 
-// TestEncryptionRefusedWithoutAKey keeps the failure loud. Silently storing a
-// capture in the clear because no key was configured is the one outcome an
-// operator who asked for encryption must never get.
 func TestEncryptionRefusedWithoutAKey(t *testing.T) {
 	store := newTestStore(t, 1<<20, 2<<20)
 	if store.EncryptionAvailable() {
@@ -248,11 +229,6 @@ func TestLoadEncryptionKeyRejectsUnsafeSources(t *testing.T) {
 	}
 }
 
-// TestEncryptedCaptureIsNeverStagedInTheClear asserts the transient half of the
-// at-rest claim. The scan runs from inside the source reader, so the store is
-// caught mid-copy with its staging file open and unrenamed — the one moment a
-// plaintext staging bug would be visible, and the moment every after-the-fact
-// scan misses.
 func TestEncryptedCaptureIsNeverStagedInTheClear(t *testing.T) {
 	const sentinel = "mid-copy-plaintext-sentinel"
 	store := newEncryptedTestStore(t, 8<<20, 16<<20)
@@ -261,8 +237,7 @@ func TestEncryptedCaptureIsNeverStagedInTheClear(t *testing.T) {
 	scans := 0
 	source := &probeReader{
 		body: payload,
-		// Small enough that the scan happens with most of the payload still to
-		// come, so the staging file is genuinely partial and still open.
+
 		chunk: 1024,
 		probe: func() {
 			scans++
@@ -284,9 +259,6 @@ func TestEncryptedCaptureIsNeverStagedInTheClear(t *testing.T) {
 	assertNoPlaintextOnDisk(t, store.Root(), sentinel)
 }
 
-// probeReader hands the store one bounded chunk at a time and runs probe before
-// each one, so an assertion can observe the store's directory part-way through a
-// capture rather than only after it.
 type probeReader struct {
 	body   []byte
 	chunk  int
@@ -318,11 +290,6 @@ func assertStagingFileExists(t *testing.T, root string) {
 	t.Fatal("no staging file mid-capture, so the scan above proves nothing")
 }
 
-// TestEncryptedArtifactRecordsNoPlaintextDigest closes the oracle the ciphertext
-// exists to shut. A plaintext SHA-256 sitting beside the blob lets anyone who can
-// read the artifact root confirm a payload they can guess, and lets them see that
-// two encrypted artifacts hold the same bytes — the equivalence that keeps
-// encrypted blobs out of dedup in the first place.
 func TestEncryptedArtifactRecordsNoPlaintextDigest(t *testing.T) {
 	store := newEncryptedTestStore(t, 1<<20, 8<<20)
 	payload := []byte("guessable-encrypted-payload")
@@ -349,11 +316,9 @@ func TestEncryptedArtifactRecordsNoPlaintextDigest(t *testing.T) {
 			t.Fatalf("artifact info returned a plaintext digest for encrypted artifact %s", meta.ID)
 		}
 	}
-	// Nothing on disk answers "are these the bytes?" either.
+
 	assertNoPlaintextOnDisk(t, store.Root(), contentAddress)
 
-	// The two encrypted copies must not be linkable to each other, and must not
-	// have been deduplicated into one blob.
 	firstInfo, err := os.Stat(store.blobPath(first.ID))
 	if err != nil {
 		t.Fatal(err)
@@ -366,13 +331,43 @@ func TestEncryptedArtifactRecordsNoPlaintextDigest(t *testing.T) {
 		t.Fatal("two encrypted captures share a blob, which is the equality encryption is meant to hide")
 	}
 
-	// An unencrypted capture still records its digest: the assertions above are
-	// about ciphertext, not about the digest disappearing everywhere.
 	plain, err := store.Put(PutOptions{Kind: "text", MIMEType: "text/plain"}, bytes.NewReader(payload))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if plain.SHA256 != contentAddress {
 		t.Fatalf("unencrypted digest = %q, want %q", plain.SHA256, contentAddress)
+	}
+}
+
+func TestEncryptionKeyCannotHideInDotDotNamedChild(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "..keys")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(dir, "artifact.key")
+	if err := os.WriteFile(key, fixtureStoreKey(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadEncryptionKey(key, root); err == nil {
+		t.Fatal("accepted key inside artifact root")
+	}
+}
+func TestEncryptedArtifactAuthenticatesEmptyFinalChunk(t *testing.T) {
+	for _, size := range []int{0, blobChunkSize} {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
+			store := newEncryptedTestStore(t, 1<<20, 4<<20)
+			meta, err := store.Put(PutOptions{Kind: "text", MIMEType: "text/plain", Encrypt: true}, bytes.NewReader(make([]byte, size)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Truncate(store.blobPath(meta.ID), meta.storedSize()-1); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, _, err := store.Read(meta.ID, 0, size+1); err == nil {
+				t.Fatal("accepted truncated final authentication tag")
+			}
+		})
 	}
 }

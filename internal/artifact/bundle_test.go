@@ -14,8 +14,6 @@ import (
 	"github.com/Don-Works/brw/internal/snapshot"
 )
 
-// bundleFakeBrowser answers every question a failure bundle asks. It carries a
-// page sentinel in each part so a test can prove the manifest never inlines one.
 type bundleFakeBrowser struct {
 	browser.Controller
 	trace    browser.TraceResult
@@ -67,8 +65,7 @@ const (
 	bundleCredentialValue   = "fixture-authorization-value-one"
 	bundleBenignHeaderName  = "X-Request-Id"
 	bundleBenignHeaderValue = "fixture-request-id-one"
-	// bundleReasonSentinel stands in for the failing step's error text, which is
-	// the one payload the manifest itself carries.
+
 	bundleReasonSentinel = "FAILED-STEP-REASON-SENTINEL"
 )
 
@@ -126,9 +123,6 @@ func readWholeArtifact(t *testing.T, store *Store, id string) []byte {
 	}
 }
 
-// TestFailureBundleReturnsOneManifestOfResolvableParts is the acceptance path:
-// one forced failure produces exactly one manifest, the manifest holds ids and
-// no payload, every id it names resolves, and every part expires on its own TTL.
 func TestFailureBundleReturnsOneManifestOfResolvableParts(t *testing.T) {
 	store := newTestStore(t, 1<<20, 8<<20)
 	service, _ := newBundleService(t, store, FailureCaptureRecipe)
@@ -188,7 +182,6 @@ func TestFailureBundleReturnsOneManifestOfResolvableParts(t *testing.T) {
 		}
 	}
 
-	// Every part is gone once its TTL passes, manifest included.
 	store.now = func() time.Time { return time.Now().Add(11 * time.Minute) }
 	for _, entry := range manifest.Entries {
 		if _, err := store.Info(entry.ArtifactID); !errors.Is(err, os.ErrNotExist) {
@@ -200,9 +193,6 @@ func TestFailureBundleReturnsOneManifestOfResolvableParts(t *testing.T) {
 	}
 }
 
-// TestFailureBundleNetworkMetadataDropsDenylistedHeaders asserts both halves:
-// the credential header is gone, and the ordinary header is still there — so
-// the test cannot pass by capturing nothing.
 func TestFailureBundleNetworkMetadataDropsDenylistedHeaders(t *testing.T) {
 	store := newTestStore(t, 1<<20, 8<<20)
 	service, _ := newBundleService(t, store, FailureCaptureAll)
@@ -254,7 +244,6 @@ func TestFailureBundleNetworkMetadataDropsDenylistedHeaders(t *testing.T) {
 		t.Fatalf("bounded metadata lost the diagnosis: %+v", request)
 	}
 
-	// Redacted trace values must not reappear either.
 	for _, entry := range manifest.Entries {
 		if bytes.Contains(readWholeArtifact(t, store, entry.ArtifactID), []byte(bundleCredentialValue)) {
 			t.Fatalf("credential value reached bundle part %q", entry.Role)
@@ -311,13 +300,10 @@ func assertStoreIsEmpty(t *testing.T, store *Store) {
 	}
 }
 
-// TestFailureBundleRecordsPartsItCouldNotCollect keeps a partial bundle honest.
-// A bundle that silently omits the screenshot tells its reader the page had none.
 func TestFailureBundleRecordsPartsItCouldNotCollect(t *testing.T) {
 	store := newTestStore(t, 1<<20, 8<<20)
 	service, fake := newBundleService(t, store, FailureCaptureAll)
-	// The page navigated away before the evidence could be collected, which is
-	// exactly what a recipe origin boundary must refuse to capture across.
+
 	fake.page = snapshot.PageSnapshot{URL: "https://elsewhere.example.test/", Title: "elsewhere"}
 	ctx := browser.WithAllowedOrigins(context.Background(), []string{"https://billing.example.test"})
 
@@ -339,9 +325,6 @@ func TestFailureBundleRecordsPartsItCouldNotCollect(t *testing.T) {
 	}
 }
 
-// TestFailureBundleEncryptsRecipeEvidenceWhenConfigured ties the two features
-// together: evidence from a private-recipe run is the most sensitive thing brw
-// stores, so it is what the recipe encryption policy is for.
 func TestFailureBundleEncryptsRecipeEvidenceWhenConfigured(t *testing.T) {
 	store := newEncryptedTestStore(t, 1<<20, 8<<20)
 	service, _ := newBundleService(t, store, FailureCaptureAll)
@@ -367,15 +350,13 @@ func TestFailureBundleEncryptsRecipeEvidenceWhenConfigured(t *testing.T) {
 			t.Fatalf("recipe evidence part %q was stored in the clear", entry.Role)
 		}
 	}
-	// The manifest is part of the bundle, not an index of harmless names: it
-	// carries the failing step's error text, the recipe id and the step.
+
 	if info, infoErr := store.Info(meta.ID); infoErr != nil || !info.Encrypted {
 		t.Fatalf("bundle manifest encrypted = %v (err %v), want the whole bundle encrypted", info.Encrypted, infoErr)
 	}
 	assertNoPlaintextOnDisk(t, store.Root(), "Uncaught TypeError")
 	assertNoPlaintextOnDisk(t, store.Root(), bundleReasonSentinel)
 
-	// A capture outside a recipe run is untouched by the recipe policy.
 	plain, err := service.CaptureFailureBundle(context.Background(), FailureBundleOptions{Reason: "manual"})
 	if err != nil {
 		t.Fatal(err)
@@ -385,15 +366,10 @@ func TestFailureBundleEncryptsRecipeEvidenceWhenConfigured(t *testing.T) {
 	}
 }
 
-// TestFailureBundleWillNotCollectPageBytesFromADisallowedOrigin is the origin
-// boundary applied to every page-derived part, not only the ones that report a
-// URL. Console text and request URLs come out of whatever document is loaded
-// when the collector runs, so a run that left the allowlist before failing must
-// not have them captured into evidence that outlives it.
 func TestFailureBundleWillNotCollectPageBytesFromADisallowedOrigin(t *testing.T) {
 	store := newTestStore(t, 1<<20, 8<<20)
 	service, fake := newBundleService(t, store, FailureCaptureAll)
-	// The run navigated off the allowlist before it failed.
+
 	fake.origin = "https://elsewhere.example.test"
 	fake.page = snapshot.PageSnapshot{URL: "https://elsewhere.example.test/", Title: bundlePageSentinel}
 	fake.console = []browser.ConsoleMessage{{Level: "error", Text: bundlePageSentinel}}
@@ -423,8 +399,7 @@ func TestFailureBundleWillNotCollectPageBytesFromADisallowedOrigin(t *testing.T)
 			t.Fatalf("%q was collected from a disallowed origin; missing = %+v", role, manifest.Missing)
 		}
 	}
-	// The action trace is brw's own record of what it did, so it survives and the
-	// bundle is not simply empty.
+
 	if len(manifest.Entries) != 1 || manifest.Entries[0].Role != "action_trace" {
 		t.Fatalf("entries = %+v, want only the action trace", manifest.Entries)
 	}

@@ -10,9 +10,6 @@ import (
 	"github.com/Don-Works/brw/internal/devtools"
 )
 
-// proxyAPI stands for the upstream HTTP controller: it satisfies artifact.API
-// without being able to store a computed document, because the store lives on
-// the browser host it forwards to.
 type proxyAPI struct{ API }
 
 func auditResult() devtools.AuditResult {
@@ -26,9 +23,6 @@ func auditResult() devtools.AuditResult {
 	}
 }
 
-// TestAttachAuditReport covers the one thing both the MCP tool and the HTTP
-// route delegate here: the report leaves the answer whatever happens, and the
-// caller is told when it was not kept.
 func TestAttachAuditReport(t *testing.T) {
 	store := newTestStore(t, 1<<20, 4<<20)
 	service, err := NewService(store, serviceFakeBrowser{})
@@ -44,15 +38,12 @@ func TestAttachAuditReport(t *testing.T) {
 		wantStored  bool
 		wantNote    string
 		wantSummary bool
-		// wantExpiryWithin bounds how far past now the handle may expire. Zero
-		// skips the check.
+
 		wantExpiryWithin time.Duration
 	}{
 		{name: "a local store keeps the report and returns a handle", api: service, in: auditResult(), wantStored: true},
 		{
-			// The report holds the raw HTML of every failing element, so a
-			// caller on a page carrying real data has to be able to bound how
-			// long it is kept.
+
 			name:             "a caller's ttl shortens the store retention",
 			api:              service,
 			in:               auditResult(),
@@ -61,9 +52,7 @@ func TestAttachAuditReport(t *testing.T) {
 			wantExpiryWithin: 5 * time.Minute,
 		},
 		{
-			// A request longer than the store keeps anything is clamped to the
-			// store default, not refused: losing the report over it would be
-			// worse than keeping it for the shorter time.
+
 			name:             "a ttl past the store retention takes the store default",
 			api:              service,
 			in:               auditResult(),
@@ -118,16 +107,13 @@ func TestAttachAuditReport(t *testing.T) {
 			if tt.wantNote == "" && got.Note != "" {
 				t.Fatalf("note = %q, want none", got.Note)
 			}
-			// The summary itself is untouched either way: a missing store loses
-			// the report, never the counts.
+
 			if got.Violations != tt.in.Violations || got.ViolationNodes != tt.in.ViolationNodes {
 				t.Fatalf("summary = %d/%d, want %d/%d", got.Violations, got.ViolationNodes, tt.in.Violations, tt.in.ViolationNodes)
 			}
 		})
 	}
 
-	// And the stored bytes have to be the report, readable through the same
-	// windowed read every other artifact uses.
 	stored := AttachAuditReport(context.Background(), service, auditResult(), 0)
 	chunk, err := service.ReadArtifact(context.Background(), stored.Artifact.ID, 0, MaxReadBytes)
 	if err != nil {
@@ -141,8 +127,6 @@ func TestAttachAuditReport(t *testing.T) {
 	}
 }
 
-// TestPutReportRefusesWhatItShouldNotStore keeps this off the list of ways to
-// put arbitrary bytes into the browser host's cache.
 func TestPutReportRefusesWhatItShouldNotStore(t *testing.T) {
 	service, err := NewService(newTestStore(t, 1<<20, 4<<20), serviceFakeBrowser{})
 	if err != nil {
@@ -171,5 +155,24 @@ func TestPutReportRefusesWhatItShouldNotStore(t *testing.T) {
 	var absent *Service
 	if _, err := absent.PutReport(context.Background(), ReportOptions{Kind: KindAccessibilityReport}, []byte(`{}`)); err == nil {
 		t.Fatal("a report was accepted with no service behind it")
+	}
+}
+
+func TestPerformanceReportsPersistThroughSharedStore(t *testing.T) {
+	for _, kind := range []string{KindPerformanceTrace, KindCPUProfile} {
+		t.Run(kind, func(t *testing.T) {
+			service, err := NewService(newTestStore(t, 1<<20, 4<<20), serviceFakeBrowser{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta, err := service.PutReport(context.Background(), ReportOptions{Kind: kind}, []byte(`{"capture":"profile"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, _, _, err := service.store.Read(meta.ID, 0, 1024)
+			if err != nil || string(data) != `{"capture":"profile"}` {
+				t.Fatalf("stored report %q %v", data, err)
+			}
+		})
 	}
 }
