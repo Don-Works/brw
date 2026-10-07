@@ -1,16 +1,5 @@
 version: '3'
 
-# Task replaces the former Makefile. Two semantics differ from Make and both
-# matter here:
-#
-#   - `deps:` runs in PARALLEL. Every ordered pipeline below therefore uses
-#     serial `cmds: - task: ...` instead. `check` in particular must stay
-#     ordered, and the test tasks must not overlap: they launch real headless
-#     Chrome, and running them concurrently turns the Manager's intentional 20s
-#     operation timeout into a load race.
-#   - Task vars do not inherit the environment the way Make's `?=` does, so each
-#     overridable var reads its env counterpart explicitly via `default`.
-#     `task homebrew-formula VERSION=0.11.0` still works: CLI vars win.
 
 vars:
   BINDIR: '{{.BINDIR | default (printf "%s/.local/bin" .HOME)}}'
@@ -26,8 +15,6 @@ vars:
   TARBALL_OS:
     sh: go env GOOS
 
-  # Inject the resolved version into the MCP serverInfo.version so the version an
-  # agent sees over MCP always matches the binary, instead of a hand-edited constant.
   GO_LDFLAGS: -X github.com/Don-Works/brw/internal/mcp.Version={{.VERSION}} -X github.com/Don-Works/brw/internal/cli.Version={{.VERSION}}
 
   HOMEBREW_TAP: Don-Works/homebrew-tap
@@ -54,16 +41,10 @@ tasks:
 
   test:
     desc: Run Go, extension and optional reader/decision worker tests
-    # browser, snapshot, and readability tests each launch real headless Chrome.
-    # Serialize package test binaries so the machine does not run dozens of Chrome
-    # roots at once and turn the Manager's intentional 20s operation timeout into
-    # a load race.
     cmds:
       - task: test-extension
       - task: test-workers
       - go test -timeout=25m -p=1 ./...
-      # A killed test binary cannot reap its own browser; fail the task rather
-      # than leave throwaway Chromes running against the machine.
       - ./scripts/check-no-orphan-browsers.sh
 
   test-workers:
@@ -81,52 +62,33 @@ tasks:
       - task: test-functional
       - python3 scripts/check-oss-hygiene.py
       - go run github.com/zricethezav/gitleaks/v8@v8.30.1 git . --redact --no-banner
-      - go test -race ./internal/artifact ./internal/recipe ./internal/mcp ./internal/http ./internal/httpclient ./internal/navpolicy ./internal/extensionbridge
+      - go test -race -p=1 ./internal/artifact ./internal/recipe ./internal/mcp ./internal/http ./internal/httpclient ./internal/navpolicy ./internal/extensionbridge
 
   install-hooks:
     desc: Point git at the tracked hooks, so every push runs `task check` first
     cmds:
       - git config core.hooksPath .githooks
 
-  # The incremental hygiene gate in `check` only sees lines a change adds, so
-  # anything committed before its rule existed is grandfathered in and no build
-  # will ever mention it. This scans every tracked file instead. Run it before a
-  # release; it reports a backlog rather than gating merges.
   hygiene-full:
     desc: Scan every tracked file for PII, secrets and local-only detail
     cmds:
       - python3 scripts/check-oss-hygiene.py --full
 
-  # Measurement, not a gate. Deliberately absent from `test` and `check`: a
-  # latency figure taken on a loaded CI machine fails for reasons that have
-  # nothing to do with the change under test, and a gate that fails for reasons
-  # nobody can act on stops being read.
-  #
-  # The run launches its own headless Chrome and serves tests/fixtures over
-  # loopback, so it needs no daemon and no network. The record carries the
-  # environment fingerprint that says whether two runs are comparable.
   bench:
     desc: Measure per-command latency, transport cost and system metrics against the local fixtures
     cmds:
       - go run -ldflags "{{.GO_LDFLAGS}}" ./cmd/brwcheck --bench --repo-root . --bench-out dist/bench/record.json
 
-  # The agent-level evaluations: four tasks graded on the end state the harness
-  # reads out of the page, not on what the run says it did. Runs with no API
-  # key; --eval-judge adds the optional LLM layer on top.
   agent-eval:
     desc: Run the four agent-level evaluations against the local fixtures
     cmds:
       - go run -ldflags "{{.GO_LDFLAGS}}" ./cmd/brwcheck --eval --repo-root . --eval-out dist/agenteval/report.json
 
-  # Runs every evaluation honestly AND sabotaged, and fails unless each honest
-  # run passes and each sabotaged one is caught. This is what says the
-  # evaluation is capable of reporting a failure at all.
   agent-eval-verify:
     desc: Prove the evaluations can fail — every task run honestly and sabotaged
     cmds:
       - go run -ldflags "{{.GO_LDFLAGS}}" ./cmd/brwcheck --eval --eval-verify --repo-root . --eval-out dist/agenteval/verify.json
 
-  # The static half of `check`, fast enough to run on every save.
   lint:
     desc: Static half of check (fmt, vet, staticcheck, govulncheck, actionlint)
     cmds:
@@ -137,8 +99,6 @@ tasks:
       - go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       - go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
-  # Extension service-worker regression tests (run the real service_worker.js in a
-  # vm with a mocked chrome API). Skipped — not failed — when node is unavailable.
   test-extension:
     desc: Extension service-worker regression tests (skipped without node)
     cmds:
@@ -150,8 +110,6 @@ tasks:
           echo "node not found; skipping extension tests"
         fi
 
-  # End-to-end gate against a real headless browser and the deterministic local
-  # fixture suite. Artifacts/profile live in a disposable directory outside git.
   test-functional:
     desc: Deterministic end-to-end suite against a real headless browser
     cmds:
@@ -159,10 +117,6 @@ tasks:
       - ./scripts/test-functional.sh
       - ./scripts/check-no-orphan-browsers.sh
 
-  # The binaries live under DATADIR and reach PATH through BINDIR symlinks, the
-  # same shape scripts/install.sh produces. brwctl doctor's default --app-dir on
-  # Linux is DATADIR and it looks for bin/brwd there, so binaries installed only
-  # into BINDIR would leave doctor reporting a broken install.
   install:
     desc: Install into DATADIR with BINDIR symlinks (the Linux shape)
     cmds:
@@ -179,8 +133,6 @@ tasks:
       - cp -R skills/brw/. "{{.DATADIR}}/skills/brw/"
       - cp scripts/browser-answer-worker.py scripts/browser-reader-mcp.py scripts/browser-reader-usage.py "{{.DATADIR}}/reader/"
       - task: sync-installed-extensions
-      # On Apple Silicon, copying a Go binary invalidates its ad-hoc code
-      # signature and the OS then SIGKILLs it ("Killed: 9"); re-sign the copies.
       - |
         if [ "$(uname)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
           codesign --force --sign - "{{.DATADIR}}/bin/brw" "{{.DATADIR}}/bin/brwd" "{{.DATADIR}}/bin/brwcheck" "{{.DATADIR}}/bin/brwctl" "{{.DATADIR}}/bin/brw-devtools-mcp" "{{.DATADIR}}/bin/brw-testbed"
@@ -212,17 +164,10 @@ tasks:
         if [ -f "$HOME/.config/brw/browser-profiles.json" ]; then
           cp "$HOME/.config/brw/browser-profiles.json" "{{.MAC_APPDIR}}/config/browser-profiles.json"
         fi
-      # Re-sign: copying a Go binary on Apple Silicon breaks its ad-hoc signature
-      # and the OS SIGKILLs it on launch ("Killed: 9").
       - |
         if command -v codesign >/dev/null 2>&1; then
           codesign --force --sign - "{{.MAC_APPDIR}}/bin/brw" "{{.MAC_APPDIR}}/bin/brwd" "{{.MAC_APPDIR}}/bin/brwcheck" "{{.MAC_APPDIR}}/bin/brwctl" "{{.MAC_APPDIR}}/bin/brw-devtools-mcp" "{{.MAC_APPDIR}}/bin/brw-testbed"
         fi
-      # Link into BINDIR, the same as the Linux `install` target above. Without
-      # this the payload installs and stays unreachable: this machine had brwd,
-      # brwctl and brwcheck on PATH from a hand-made link set predating the brw
-      # CLI, so every install-mac since copied bin/brw into the app dir and left
-      # `brw` missing from PATH entirely.
       - mkdir -p "{{.BINDIR}}"
       - ln -sf "{{.MAC_APPDIR}}/bin/brw" "{{.BINDIR}}/brw"
       - ln -sf "{{.MAC_APPDIR}}/bin/brwd" "{{.BINDIR}}/brwd"
@@ -231,15 +176,6 @@ tasks:
       - ln -sf "{{.MAC_APPDIR}}/bin/brw-devtools-mcp" "{{.BINDIR}}/brw-devtools-mcp"
       - ln -sf "{{.MAC_APPDIR}}/bin/brw-testbed" "{{.BINDIR}}/brw-testbed"
 
-  # Keep every existing unpacked extension payload current. rsync's exclusion
-  # preserves the local bridge endpoint/token file in each copy while --delete
-  # prevents removed source files from lingering as executable code.
-  #
-  # DATADIR is listed alongside MAC_APPDIR because install-mac writes only
-  # MAC_APPDIR: a DATADIR left behind by an earlier `install` survived every
-  # subsequent install untouched. On one machine that copy sat at extension
-  # 0.4.14 while the loaded one was 0.5.0 — stale executable code that no install
-  # target could reach. Both dirs are globbed so whichever exist are refreshed.
   sync-installed-extensions:
     desc: Refresh every unpacked extension copy on disk from extension/
     cmds:
@@ -251,10 +187,6 @@ tasks:
           fi
         done
 
-  # Install the public operating skill where the common agent harnesses discover
-  # it globally. Operational recipes remain in the private provider, never here.
-  # Claude Code reads ~/.claude/skills; omitting it is why a Claude Code user found
-  # no brw skill installed and wrote their own.
   install-agent-skills:
     desc: Install the public brw skill for Claude, Codex and agents harnesses
     cmds:
@@ -263,9 +195,6 @@ tasks:
       - rsync -a --delete skills/brw/ "$HOME/.agents/skills/brw"/
       - rsync -a --delete skills/brw/ "$HOME/.codex/skills/brw"/
 
-  # Streamline the one-time load-unpacked install of the brw Chrome extension.
-  # Prints the exact folder + stable id, then (best-effort on macOS) opens
-  # chrome://extensions and reveals the folder in Finder so you can pick it.
   install-extension:
     desc: Print the load-unpacked folder and extension id for a one-time install
     silent: true
@@ -314,15 +243,11 @@ tasks:
     cmds:
       - scripts/package-macos.sh "{{.VERSION}}" dist/release
 
-  # The sudo-free install path: relocatable archives for scripts/install.sh and
-  # the Homebrew formula. One OS/arch, defaulting to the host.
   package-tarball:
     desc: Build one relocatable tarball for the host OS/arch
     cmds:
       - scripts/package-tarball.sh "{{.VERSION}}" "{{.TARBALL_OS}}" "{{.GOARCH}}" dist/release
 
-  # darwin/arm64 is built last so a macOS host leaves a natively signable archive
-  # in place; cross-built darwin binaries cannot be ad-hoc signed off a Mac.
   package-tarballs:
     desc: Build the four release tarballs (linux/darwin x amd64/arm64)
     cmds:
@@ -331,10 +256,6 @@ tasks:
       - scripts/package-tarball.sh "{{.VERSION}}" darwin amd64 dist/release
       - scripts/package-tarball.sh "{{.VERSION}}" darwin arm64 dist/release
 
-  # Print the tap formula for VERSION with the four release sha256 sums filled in,
-  # so a release bumps the tap mechanically rather than by hand. Reads the sums
-  # from dist/release when the archives are local, otherwise from the published
-  # release. Redirect into the tap checkout's Formula/brw.rb.
   homebrew-formula:
     desc: Print the Homebrew tap formula for VERSION with sha256 sums filled in
     silent: true

@@ -370,7 +370,7 @@ jobs:
           {
             echo "### Relocatable tarballs (.tar.gz)"
             echo ""
-            echo "- macOS binaries: **ad-hoc signed**, which is what lets Apple Silicon run them at all. No Developer ID is involved on this path; \`scripts/install.sh\` re-applies the same ad-hoc signature after unpacking. The \`.pkg\` above is the signed macOS installer."
+            echo "- macOS binaries are signed during packaging with the configured Developer ID, or **ad-hoc** when no certificate is configured. The macOS report above records the available signing identity and notarization status. \`scripts/install.sh\` applies an ad-hoc signature after unpacking; use the \`.pkg\` and its signing report when Developer ID or notarization is required."
             echo "- Linux binaries: **unsigned**, as on the \`.deb\` / \`.rpm\` path."
             echo "- Every archive ships a matching \`.sha256\`. \`install.sh\` checks it before unpacking and falls back to \`SHA256SUMS.txt\`, and the provenance attestation covers the archive itself."
             echo ""
