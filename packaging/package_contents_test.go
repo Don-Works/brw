@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -212,9 +213,20 @@ func requireFileContains(t *testing.T, path string, fragments ...string) {
 }
 
 func TestTarballSignsAfterCleanupAndPreservesKeychainArgument(t *testing.T) {
-	if _, err := exec.LookPath("bash"); err != nil {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
 		t.Skip("bash unavailable")
 	}
+	if runtime.GOOS == "darwin" {
+		bash = "/bin/bash"
+	}
+	for name, identity := range map[string]string{"ad_hoc": "-", "developer_id": "fixture identity"} {
+		t.Run(name, func(t *testing.T) { testTarballSigner(t, bash, identity) })
+	}
+}
+
+func testTarballSigner(t *testing.T, bash, identity string) {
+	t.Helper()
 	root := t.TempDir()
 	for _, dir := range []string{"scripts", "extension", "tests", "skills", "fake-bin"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
@@ -240,6 +252,7 @@ exit 1
 `,
 		"xattr": "#!/bin/sh\nrm -f \"$2\"/bin/*.signed\n",
 		"codesign": `#!/bin/sh
+arguments=$(printf '%s\n' "$@")
 while [ "$#" -gt 0 ]; do
   if [ "$1" = --keychain ]; then
     shift
@@ -249,6 +262,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 printf signed > "$last.signed"
+printf '%s\n' "$arguments" > "$last.flags"
 `,
 	}
 	for name, body := range stubs {
@@ -257,8 +271,10 @@ printf signed > "$last.signed"
 		}
 	}
 	keychain := filepath.Join(root, "keychain with spaces")
-	cmd := exec.Command("bash", filepath.Join(root, "scripts/package-tarball.sh"), "1.2.3", "darwin", "arm64")
-	cmd.Env = append(os.Environ(), "PATH="+filepath.Join(root, "fake-bin")+string(os.PathListSeparator)+os.Getenv("PATH"), "MACOS_SIGN_IDENTITY=fixture identity", "MACOS_KEYCHAIN="+keychain, "BRW_TEST_KEYCHAIN="+keychain)
+	cmd := exec.Command(bash, filepath.Join(root, "scripts/package-tarball.sh"), "1.2.3", "darwin", "arm64")
+	cmd.Env = append(os.Environ(), "PATH="+filepath.Join(root, "fake-bin")+string(os.PathListSeparator)+os.Getenv("PATH"), "MACOS_SIGN_IDENTITY="+identity,
+		"MACOS_KEYCHAIN="+keychain,
+		"BRW_TEST_KEYCHAIN="+keychain)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("signing package: %v: %s", err, output)
 	}
@@ -274,6 +290,7 @@ printf signed > "$last.signed"
 	defer zipped.Close()
 	archive := tar.NewReader(zipped)
 	signed := map[string]bool{}
+	flags := map[string]string{}
 	for {
 		header, err := archive.Next()
 		if err == io.EOF {
@@ -285,10 +302,25 @@ printf signed > "$last.signed"
 		if strings.HasSuffix(header.Name, ".signed") {
 			signed[strings.TrimSuffix(filepath.Base(header.Name), ".signed")] = true
 		}
+		if strings.HasSuffix(header.Name, ".flags") {
+			data, err := io.ReadAll(archive)
+			if err != nil {
+				t.Fatal(err)
+			}
+			flags[strings.TrimSuffix(filepath.Base(header.Name), ".flags")] = string(data)
+		}
 	}
 	for _, command := range []string{"brw", "brwd", "brwctl", "brwcheck", "brw-devtools-mcp", "brw-testbed"} {
 		if !signed[command] {
 			t.Errorf("cleanup removed completed signature for %s", command)
+		}
+		want := []string{"--force", "--sign", identity}
+		if identity != "-" {
+			want = append(want, "--timestamp", "--options", "runtime", "--keychain", keychain)
+		}
+		want = append(want, filepath.Join(root, "dist/package/tarball-darwin-arm64/brw_1.2.3_darwin_arm64/bin", command))
+		if flags[command] != strings.Join(want, "\n")+"\n" {
+			t.Errorf("%s signing arguments=%q want=%q", command, flags[command], want)
 		}
 	}
 }
