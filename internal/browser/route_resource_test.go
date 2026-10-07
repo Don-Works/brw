@@ -65,8 +65,6 @@ func TestResourceTypeMatches(t *testing.T) {
 	}
 }
 
-// A route that names resource types must decline a request of another kind, so
-// the scan continues to a later rule rather than the first match winning.
 func TestRouteStateMatchHonoursResourceTypes(t *testing.T) {
 	state := &routeState{}
 	state.routes = map[string][]*Route{
@@ -80,7 +78,7 @@ func TestRouteStateMatchHonoursResourceTypes(t *testing.T) {
 	if got := state.match("t1", "https://example.com/a.png", network.ResourceTypeImage); got != nil {
 		t.Fatal("an image request should not match a script-only route")
 	}
-	// An unfiltered route still matches everything.
+
 	state.routes["t2"] = []*Route{{Pattern: "*", Behaviour: RouteAbort}}
 	if got := state.match("t2", "https://example.com/a.png", network.ResourceTypeImage); got == nil {
 		t.Fatal("an unfiltered route should match an image request")

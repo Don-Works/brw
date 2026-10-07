@@ -12,14 +12,8 @@ import (
 	"github.com/chromedp/cdproto/runtime"
 )
 
-// everyKind is what a test subscriber asks for when the point of the test is
-// something other than the kind filter.
 var everyKind = []pageEventKind{eventLoad, eventNavigated, eventDialog, eventDownload}
 
-// attachScope models what attachTab does before any event can arrive: the scope
-// exists and something is responsible for dropping it. publish and the load-state
-// marks deliberately refuse to create a scope, so a test that ingests without
-// this would be exercising the post-teardown path instead.
 func attachScope(t *testing.T, hub *eventHub, name string) {
 	t.Helper()
 	hub.mu.Lock()
@@ -27,11 +21,6 @@ func attachScope(t *testing.T, hub *eventHub, name string) {
 	hub.mu.Unlock()
 }
 
-// TestEventHubClassifiesTheSubscribedEvents drives each CDP event the single
-// per-context subscription carries through ingest and checks what a waiter would
-// see. A kind that stops being classified here stops waking the wait that reads
-// it — and a kind that starts being carried when nothing consumes it takes a slot
-// in every waiter's finite queue.
 func TestEventHubClassifiesTheSubscribedEvents(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -127,8 +116,6 @@ func TestEventHubClassifiesTheSubscribedEvents(t *testing.T) {
 				}
 			}
 
-			// What the hub declines to carry must not be retained either: the ring
-			// is the other half of the memory and privacy bound.
 			if tt.wantNone {
 				hub.mu.Lock()
 				retained := 0
@@ -146,11 +133,6 @@ func TestEventHubClassifiesTheSubscribedEvents(t *testing.T) {
 	}
 }
 
-// TestASubscriberOnlyReceivesTheKindsItAskedFor is the queue-crowding guard. The
-// per-waiter queue is finite and a full one drops what lands next, so a waiter
-// also handed kinds it does not care about can have the event it is waiting for
-// pushed out by ordinary page traffic. Publishing the burst BEFORE the wait looks
-// is the real shape of it: the events are already queued when it does.
 func TestASubscriberOnlyReceivesTheKindsItAskedFor(t *testing.T) {
 	hub := &eventHub{}
 	attachScope(t, hub, "tab-1")
@@ -173,9 +155,6 @@ func TestASubscriberOnlyReceivesTheKindsItAskedFor(t *testing.T) {
 	}
 }
 
-// TestLoadStateFollowsNavigationAndLoad covers the state a readiness wait reads
-// instead of asking the document. "observed" is what separates "this tab has not
-// finished loading" from "brw attached after it already had".
 func TestLoadStateFollowsNavigationAndLoad(t *testing.T) {
 	hub := &eventHub{}
 	attachScope(t, hub, "tab-1")
@@ -194,15 +173,12 @@ func TestLoadStateFollowsNavigationAndLoad(t *testing.T) {
 		t.Fatalf("after the load event want observed=true loaded=true, got %v/%v", observed, loaded)
 	}
 
-	// A subframe navigating must not make the tab look unloaded again.
 	hub.ingest("tab-1", &page.EventFrameNavigated{Frame: &cdp.Frame{ParentID: "parent", URL: "https://ads.test/"}})
 	if _, loaded := hub.loadState("tab-1"); !loaded {
 		t.Fatal("a subframe navigation reset the tab's load state")
 	}
 }
 
-// TestRetainedEventsAreCappedPerKind is the memory-leak guard: retention must not
-// grow with how long a tab lives.
 func TestRetainedEventsAreCappedPerKind(t *testing.T) {
 	hub := &eventHub{}
 	attachScope(t, hub, "tab-1")
@@ -220,16 +196,12 @@ func TestRetainedEventsAreCappedPerKind(t *testing.T) {
 	if retained != maxRetainedEventsPerKind {
 		t.Fatalf("retained %d events after publishing %d, want the %d cap", retained, published, maxRetainedEventsPerKind)
 	}
-	// The ring must keep the RECENT events; a wait asks about what just happened.
+
 	if want := fmt.Sprintf("https://example.test/%d", published-1); newest != want {
 		t.Fatalf("newest retained event = %q, want %q", newest, want)
 	}
 }
 
-// TestOneKindsTrafficDoesNotEvictAnother is the other half of that guard and the
-// reason retention is keyed by kind. brw answers a dialog the instant it opens,
-// so the wait written after the click looks the dialog up in the ring; one shared
-// ring makes that lookup a race against whatever else the page did in between.
 func TestOneKindsTrafficDoesNotEvictAnother(t *testing.T) {
 	hub := &eventHub{}
 	attachScope(t, hub, "tab-1")
@@ -247,9 +219,6 @@ func TestOneKindsTrafficDoesNotEvictAnother(t *testing.T) {
 	}
 }
 
-// TestPublishNeverBlocksOnASlowSubscriber: publish runs on chromedp's single
-// event-dispatch goroutine. A blocking send there would stall every target's
-// events behind the slowest waiter.
 func TestPublishNeverBlocksOnASlowSubscriber(t *testing.T) {
 	hub := &eventHub{}
 	attachScope(t, hub, "tab-1")
@@ -270,11 +239,6 @@ func TestPublishNeverBlocksOnASlowSubscriber(t *testing.T) {
 	}
 }
 
-// TestScopeIsDroppedWhenItsContextEnds is the teardown guard: cancelling the
-// context that owns a subscription must leave no scope, no retained event and no
-// registered waiter behind — and must keep it that way. chromedp tests each
-// listener's context per event, so an event that passed that test can still
-// arrive after the scope is gone.
 func TestScopeIsDroppedWhenItsContextEnds(t *testing.T) {
 	hub := &eventHub{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -299,9 +263,6 @@ func TestScopeIsDroppedWhenItsContextEnds(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// A late event must not bring the scope back. A resurrected scope has no
-	// context left to drop it, so it and everything it retains would then live for
-	// the daemon's lifetime.
 	hub.ingest("tab-1", &page.EventLoadEventFired{})
 	hub.ingest("tab-1", &page.EventFrameNavigated{Frame: &cdp.Frame{URL: "https://example.test/"}})
 	hub.publish("tab-1", pageEvent{Kind: eventDialog, Text: "after teardown"})
@@ -313,10 +274,6 @@ func TestScopeIsDroppedWhenItsContextEnds(t *testing.T) {
 	}
 }
 
-// TestReleasedSubscriptionLeavesNoScopeBehind: a wait against a scope nothing has
-// attached to (no live tab context) conjures the scope. Releasing must take it
-// with it, or every such wait leaks one map entry — including whatever landed in
-// it meanwhile, which nothing can read once the last subscriber is gone.
 func TestReleasedSubscriptionLeavesNoScopeBehind(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -343,15 +300,12 @@ func TestReleasedSubscriptionLeavesNoScopeBehind(t *testing.T) {
 			if hub.liveScopes() != 0 {
 				t.Fatalf("scopes = %d after release, want 0", hub.liveScopes())
 			}
-			// Release is idempotent.
+
 			release()
 		})
 	}
 }
 
-// TestRecentReturnsOnlyMatchingEventsInsideTheWindow covers the "it already
-// happened" half of a wait: brw answers a dialog the instant it opens, so the
-// wait written after the click has to find it in the ring.
 func TestRecentReturnsOnlyMatchingEventsInsideTheWindow(t *testing.T) {
 	hub := &eventHub{}
 	attachScope(t, hub, "tab-1")
@@ -369,30 +323,15 @@ func TestRecentReturnsOnlyMatchingEventsInsideTheWindow(t *testing.T) {
 	}
 }
 
-// unwatchedEventSettleGrace is how long an event the settle window does not watch
-// for is held against the window still being open. The window can only end early
-// by reading that event off its queue, and publish has already queued it by the
-// time it returns, so any wait long enough to schedule that read is enough.
 const unwatchedEventSettleGrace = 150 * time.Millisecond
 
-// TestAwaitPrearmedSettleAbandonsTheScriptOnNavigation proves the settle window's
-// navigation branch comes from the event stream. The in-page promise it is
-// waiting on lives in the execution context the navigation is destroying, so
-// without the stream the settle waits for a reply that will never arrive.
-//
-// It pins every way the window can end — the settle answering, a navigation, the
-// cap, the tab dying — and, for all of them, that the await it leaves behind is
-// cancelled rather than left parked on a reply from a tab the next action is
-// about to drive.
 func TestAwaitPrearmedSettleAbandonsTheScriptOnNavigation(t *testing.T) {
 	tests := []struct {
 		name string
-		// kinds is what the settle window's subscription asks for; nil subscribes
-		// to nothing, which is the no-event-stream fallback.
+
 		kinds []pageEventKind
 		event *pageEvent
-		// ignoresEvent requires the published event to leave the window open. The
-		// window then ends only once the test lets the in-page settle answer.
+
 		ignoresEvent  bool
 		closeTabEarly bool
 		awaitFor      time.Duration
@@ -412,8 +351,7 @@ func TestAwaitPrearmedSettleAbandonsTheScriptOnNavigation(t *testing.T) {
 			settleCap: 5 * time.Second,
 		},
 		{
-			// The queue carries every kind its subscription asked for, so the window
-			// has to decide on the kind and not on "something arrived".
+
 			name:         "an unrelated event does not end the settle window",
 			kinds:        everyKind,
 			event:        &pageEvent{Kind: eventDialog},
@@ -495,13 +433,10 @@ func TestAwaitPrearmedSettleAbandonsTheScriptOnNavigation(t *testing.T) {
 				t.Fatal("the settle window never ended")
 			}
 
-			// A settle issued on a dead context returns at once having settled
-			// nothing, which would make the whole window a no-op.
 			if live := <-liveAtStart; !live {
 				t.Fatal("the in-page settle was issued on an already-cancelled context")
 			}
-			// However the window ended, the await must not be left waiting on a tab
-			// the caller is about to issue its post-action snapshot against.
+
 			awaitCtx := <-awaited
 			select {
 			case <-awaitCtx.Done():
@@ -512,10 +447,6 @@ func TestAwaitPrearmedSettleAbandonsTheScriptOnNavigation(t *testing.T) {
 	}
 }
 
-// TestAwaitEventOutcomes covers every way a wait on the shared stream can end.
-// The "tab closed" case is the one that is easy to get wrong: the subscription
-// dies with the tab, so a wait that only watched its own deadline would sit for
-// the full timeout and then report the wrong reason.
 func TestAwaitEventOutcomes(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-// rankingPage deliberately puts the worst candidate first in document order, so
-// a ranking that does nothing at all is distinguishable from one that works.
 func rankingPage() []Element {
 	return []Element{
 		{Ref: "e4", Role: "textbox", Tag: "input", Name: "Invoice number", Disabled: true},
@@ -18,9 +16,6 @@ func rankingPage() []Element {
 	}
 }
 
-// A <label> carries the same accessible name as the field it labels and often
-// precedes it, so document order offers the label first. Demoting it is the
-// reason this is a ranking and not just a filter.
 func TestRankTargetCandidatesDemotesALabelBelowTheFieldItNames(t *testing.T) {
 	visible := true
 	mixed := append([]Element{

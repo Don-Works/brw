@@ -2,30 +2,20 @@ package browser
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
 
 // ObserveLevel selects how much of the post-action observation is REPORTED.
-//
-// It never selects whether brw looks. The observation is also where the
-// navigation policy re-checks the committed destination and where the tab's
-// semantic-state version advances, so a level that skipped the read would let a
-// caller opt out of a guard by asking for a smaller answer. Every level costs
-// the same round trip; what changes is how many tokens the answer spends.
 type ObserveLevel string
 
 const (
-	// ObserveFull is the default and today's payload: outcome, URL, title, focus,
-	// what changed, and the frontier element list with refs to act on next.
+	// ObserveFull is the default and today's payload: outcome, URL, title, focus, what changed, and the frontier element list with refs to act on next.
 	ObserveFull ObserveLevel = "full"
-	// ObserveMinimal keeps the outcome, where the page now is, and the summary of
-	// what changed, and drops the element list. Enough to confirm a step landed,
-	// not enough to pick the next ref without a snapshot.
+	// ObserveMinimal keeps the outcome, where the page now is, and the summary of what changed, and drops the element list.
 	ObserveMinimal ObserveLevel = "minimal"
-	// ObserveNone reports only the outcome: did the action succeed, did anything
-	// change, and any warning. An action whose outcome is unknowable is not a
-	// saving, so success/failure and changed_state survive every level.
+	// ObserveNone reports only the outcome: did the action succeed, did anything change, and any warning.
 	ObserveNone ObserveLevel = "none"
 )
 
@@ -34,9 +24,7 @@ func ObserveLevels() []string {
 	return []string{string(ObserveFull), string(ObserveMinimal), string(ObserveNone)}
 }
 
-// ParseObserveLevel maps a caller's value onto a level. An empty value means the
-// caller did not ask, which is reported separately so a runner can apply its own
-// default without having to distinguish it from an explicit "full".
+// ParseObserveLevel maps a caller's value onto a level.
 func ParseObserveLevel(value string) (level ObserveLevel, explicit bool, err error) {
 	trimmed := strings.ToLower(strings.TrimSpace(value))
 	if trimmed == "" {
@@ -49,8 +37,7 @@ func ParseObserveLevel(value string) (level ObserveLevel, explicit bool, err err
 	return ObserveFull, false, fmt.Errorf("unknown observe level %q; supported: %s", value, strings.Join(ObserveLevels(), ", "))
 }
 
-// ApplyToAction trims an action result to the level. ObserveFull returns the
-// result unchanged, so a caller that passes nothing gets byte-identical output.
+// ApplyToAction trims an action result to the level.
 func (l ObserveLevel) ApplyToAction(result ActionResult) ActionResult {
 	switch l {
 	case ObserveMinimal:
@@ -73,22 +60,11 @@ func (l ObserveLevel) ApplyToAction(result ActionResult) ActionResult {
 	}
 }
 
-// navigationActions are the action verbs whose ActionResult is a navigation:
-// the outcome IS the destination, and the message is written from the url or
-// direction that was REQUESTED, before the observation reads where the browser
-// landed. Trimming such a result to the outcome alone leaves the caller holding
-// a claim brw never verified.
-//
-// Every surface that trims one keys off THIS set rather than naming the verbs
-// again: the standalone tool list in internal/mcp derives from it, and the
-// brw_plan step classification below is checked against it in both directions.
-// Naming them per surface is what let the plan step keep dropping the url after
-// the two tools were fixed.
 var navigationActions = []string{"navigate", "navigate_to"}
 
-// NavigationActions lists those verbs. The tool name for each is "brw_"+verb.
+// NavigationActions lists those verbs.
 func NavigationActions() []string {
-	return append([]string(nil), navigationActions...)
+	return slices.Clone(navigationActions)
 }
 
 // IsNavigationAction reports whether a verb's result is a navigation.
@@ -96,14 +72,7 @@ func IsNavigationAction(action string) bool {
 	return slices.Contains(navigationActions, action)
 }
 
-// ApplyToNavigation trims a navigation's observation and keeps url at every
-// level, because a navigation's outcome IS the destination.
-//
-// The message is written from the url that was REQUESTED, before the
-// observation reads the one the browser committed to. A result that kept that
-// message and dropped the observed url would assert a destination brw never
-// verified: after a redirect, an interstitial or a login wall the caller would
-// be told it arrived somewhere it did not.
+// ApplyToNavigation trims a navigation's observation and keeps url at every level, because a navigation's outcome IS the destination.
 func (l ObserveLevel) ApplyToNavigation(result ActionResult) ActionResult {
 	committed := result.URL
 	trimmed := l.ApplyToAction(result)
@@ -111,18 +80,9 @@ func (l ObserveLevel) ApplyToNavigation(result ActionResult) ActionResult {
 	return trimmed
 }
 
-// ApplyToBatch trims a batch's single closing observation. The per-step results
-// are untouched at every level: they are the record of what ran, and a batch
-// that hid which step failed would be unusable.
-//
-// ObserveMinimal is deliberately the same as ObserveFull here. A BatchResult
-// carries no element list to drop — the whole point of a batch is one closing
-// observation — so minimal has nothing to trim, and brw_batch's own schema text
-// says so rather than advertising a saving that cannot happen.
+// ApplyToBatch trims a batch's single closing observation.
 func (l ObserveLevel) ApplyToBatch(result BatchResult) BatchResult {
 	switch l {
-	case ObserveMinimal:
-		return result
 	case ObserveNone:
 		result.Changed = nil
 		result.URL = ""
@@ -135,26 +95,12 @@ func (l ObserveLevel) ApplyToBatch(result BatchResult) BatchResult {
 	}
 }
 
-// ApplyToPlan trims a plan's per-step observations. The LAST step keeps the
-// caller's level (defaulting to full) and the intermediate steps drop to
-// minimal, because a plan's intermediate observations are the ones nobody reads:
-// the flow has already committed to the next step before the model sees them.
-//
-// An explicit level applies to every step's OBSERVATION, including the last, so
-// a caller that asked for none gets none. It never touches a step's own
-// product: a `snapshot` or `read` step was written to fetch that payload, and a
-// level that deleted it would turn the step into a round trip that returns
-// nothing. SKILL.md sends agents to brw_plan for exactly that mid-flow
-// snapshot.
-//
-// The input is not modified: the trim writes into copies, so a caller that logs
-// or re-reads the untrimmed result still sees what the runner produced.
+// ApplyToPlan trims a plan's per-step observations.
 func (l ObserveLevel) ApplyToPlan(result PlanResult, explicit bool) PlanResult {
 	if len(result.Steps) == 0 {
 		return result
 	}
-	steps := make([]PlanStepResult, len(result.Steps))
-	copy(steps, result.Steps)
+	steps := slices.Clone(result.Steps)
 	result.Steps = steps
 	for i := range steps {
 		level := PlanStepObserveLevel(l, explicit, i, len(steps))
@@ -177,40 +123,18 @@ func PlanStepObserveLevel(level ObserveLevel, explicit bool, index, total int) O
 	return ObserveMinimal
 }
 
-// planStepPayload says what a plan step's result carries, which is what decides
-// whether an observe level may trim it.
 type planStepPayload int
 
 const (
-	// planStepProduct is the step's own product — a snapshot, a page read, the
-	// tab an open created. The caller wrote the step to get it, so no level
-	// drops it. It is the zero value on purpose: an unclassified verb reports in
-	// full rather than losing a payload nobody classified.
 	planStepProduct planStepPayload = iota
-	// planStepObservation is a post-action observation, the payload observe
-	// exists to trim.
+
 	planStepObservation
-	// planStepFindAct is a locate-and-act result: {matched, action, result},
-	// with the observation nested one level down and the matched element — the
-	// answer to "which one did you act on" — beside it.
+
 	planStepFindAct
-	// planStepNavigation is a post-navigation observation: an observation whose
-	// url is the OUTCOME, so every level keeps it. See ApplyToNavigation. A step
-	// classified as a plain observation would drop the url while keeping the
-	// message written from the requested one, which is the same false claim the
-	// standalone navigation tools used to make.
+
 	planStepNavigation
 )
 
-// planStepPayloads classifies every brw_plan step verb. The trim is driven by
-// the verb the caller wrote rather than by sniffing the payload's shape: the
-// shape differs by transport (a typed struct in-process, a decoded object over
-// the upstream HTTP proxy), and the predicate that guessed from shape trimmed
-// neither find_act form. TestEveryPlanStepVerbIsClassifiedForObserve checks
-// this table against the advertised step enum in both directions, so a new verb
-// cannot quietly default its own level, and
-// TestEveryNavigationVerbIsClassifiedAsOne checks the navigation entries against
-// navigationActions in both directions.
 var planStepPayloads = map[string]planStepPayload{
 	"click":       planStepObservation,
 	"click_text":  planStepObservation,
@@ -229,41 +153,27 @@ var planStepPayloads = map[string]planStepPayload{
 	"focus_tab":   planStepProduct,
 }
 
-// PlanStepVerbIsClassified reports whether a plan step verb has an entry in the
-// observe classification. Exported for the catalogue test that checks the table
-// against the advertised step enum from the package that owns that enum.
+// PlanStepVerbIsClassified reports whether a plan step verb has an entry in the observe classification.
 func PlanStepVerbIsClassified(action string) bool {
 	_, ok := planStepPayloads[action]
 	return ok
 }
 
-// ClassifiedPlanStepVerbs lists the verbs the observe classification knows, so
-// the same test can catch a table entry for a verb no longer advertised.
+// ClassifiedPlanStepVerbs lists the verbs the observe classification knows, so the same test can catch a table entry for a verb no longer advertised.
 func ClassifiedPlanStepVerbs() []string {
-	verbs := make([]string, 0, len(planStepPayloads))
-	for verb := range planStepPayloads {
-		verbs = append(verbs, verb)
-	}
-	return verbs
+	return slices.Collect(maps.Keys(planStepPayloads))
 }
 
-// PlanStepVerbKeepsTheCommittedURL reports whether a plan step verb's result is
-// trimmed as a navigation, so the package that owns the advertised step enum can
-// check that classification against the tool surface without reaching into this
-// table.
+// PlanStepVerbKeepsTheCommittedURL reports whether a plan step verb's result is trimmed as a navigation, so the package that owns the advertised step enum can check that classification against the tool surface without reaching into this table.
 func PlanStepVerbKeepsTheCommittedURL(action string) bool {
 	return planStepPayloads[action] == planStepNavigation
 }
 
-// observationOnlyKeys are the ActionResult fields an observe level drops. They
-// are listed by wire name so a plan step result that came back over HTTP as a
-// generic object trims to the same shape as one produced in-process.
 var observationOnlyKeys = map[ObserveLevel][]string{
 	ObserveMinimal: {"elements", "targets", "snapshot"},
 	ObserveNone:    {"elements", "targets", "snapshot", "changed", "url", "title", "focus", "version"},
 }
 
-// trimStepResult trims one plan step payload to the level its verb allows.
 func trimStepResult(action string, value any, level ObserveLevel) any {
 	switch planStepPayloads[action] {
 	case planStepObservation:
@@ -277,9 +187,6 @@ func trimStepResult(action string, value any, level ObserveLevel) any {
 	}
 }
 
-// trimObservation trims an action observation in whichever of its two shapes
-// arrived: the concrete struct from an in-process transport, or the decoded
-// object from the upstream HTTP one.
 func trimObservation(value any, level ObserveLevel) any {
 	switch typed := value.(type) {
 	case ActionResult:
@@ -297,10 +204,6 @@ func trimObservation(value any, level ObserveLevel) any {
 	}
 }
 
-// trimNavigation trims a post-navigation step observation in either shape,
-// keeping the committed url. It is ApplyToNavigation for the plan surface: the
-// step's message names the url the caller ASKED for, so the observed one is the
-// only thing in the result that says where the browser actually is.
 func trimNavigation(value any, level ObserveLevel) any {
 	switch typed := value.(type) {
 	case ActionResult:
@@ -318,22 +221,10 @@ func trimNavigation(value any, level ObserveLevel) any {
 	}
 }
 
-// navigationOnlyKeys is observationOnlyKeys minus url, for the decoded shape a
-// plan step arrives in over the upstream HTTP transport.
 func navigationOnlyKeys(level ObserveLevel) []string {
-	keys := make([]string, 0, len(observationOnlyKeys[level]))
-	for _, key := range observationOnlyKeys[level] {
-		if key == "url" {
-			continue
-		}
-		keys = append(keys, key)
-	}
-	return keys
+	return slices.DeleteFunc(slices.Clone(observationOnlyKeys[level]), func(key string) bool { return key == "url" })
 }
 
-// trimFindActResult trims the observation half of a locate-and-act step and
-// leaves `matched` alone: which element was chosen is the answer, not the
-// observation, and a step whose ref is gone cannot be followed up.
 func trimFindActResult(value any, level ObserveLevel) any {
 	switch typed := value.(type) {
 	case FindActResult:
@@ -359,20 +250,11 @@ func trimFindActResult(value any, level ObserveLevel) any {
 	}
 }
 
-// withoutKeys copies a decoded payload minus the named keys. It copies rather
-// than deleting in place because the map belongs to the result the runner
-// produced, which the caller may still read or log untrimmed.
 func withoutKeys(in map[string]any, keys []string) map[string]any {
-	drop := make(map[string]bool, len(keys))
-	for _, key := range keys {
-		drop[key] = true
-	}
 	out := make(map[string]any, len(in))
-	for key, value := range in {
-		if drop[key] {
-			continue
-		}
-		out[key] = value
+	maps.Copy(out, in)
+	for _, key := range keys {
+		delete(out, key)
 	}
 	return out
 }
