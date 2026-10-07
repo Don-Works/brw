@@ -20,6 +20,7 @@ import (
 var runtimeConsentHookProbes = map[string]func(context.Context) bool{
 	"CheckFetchDestination": func(ctx context.Context) bool { return browser.FetchCheckFromContext(ctx) != nil },
 	"CheckFrameRead":        func(ctx context.Context) bool { return browser.FrameReadCheckFromContext(ctx) != nil },
+	"CheckFrameAct":         func(ctx context.Context) bool { return browser.FrameActCheckFromContext(ctx) != nil },
 }
 
 var consentSurfaces = map[string]func(t *testing.T, guard *siteconsent.Guard, ctrl browser.Controller) context.Context{
@@ -134,6 +135,19 @@ func TestEveryConsentSurfaceInstallsEveryRuntimeHook(t *testing.T) {
 			if err := frameRead("https://shop.test"); err != nil {
 				t.Errorf("%s refused the granted origin %v, so the hook is not wired to the daemon's own grants", surface, err)
 			}
+			frameAct := browser.FrameActCheckFromContext(ctx)
+			if frameAct == nil {
+				t.Fatalf("%s installs no cross-origin act check", surface)
+			}
+			if err := frameAct("https://shop.test"); err == nil {
+				t.Fatalf("%s let a child read grant authorize input", surface)
+			}
+			if _, err := guard.Allow(siteconsent.GrantOptions{Origin: "https://shop.test", Scope: siteconsent.ScopeAct, Actor: "fixture-user"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := frameAct("https://shop.test"); err != nil {
+				t.Fatalf("%s refused the child act grant: %v", surface, err)
+			}
 
 			fetch := browser.FetchCheckFromContext(ctx)
 			if fetch == nil {
@@ -173,7 +187,7 @@ func TestEveryConsentInstallerIsAnEnumeratedSurface(t *testing.T) {
 		}
 		source := string(body)
 		pkg := filepath.ToSlash(filepath.Dir(strings.TrimPrefix(filepath.ToSlash(path), filepath.ToSlash(root)+"/")))
-		for _, partial := range []string{"browser.WithFetchCheck(", "browser.WithFrameReadCheck("} {
+		for _, partial := range []string{"browser.WithFetchCheck(", "browser.WithFrameReadCheck(", "browser.WithFrameActCheck("} {
 			if strings.Contains(source, partial) {
 				t.Errorf("%s installs %s by hand; go through browser.WithRuntimeConsent so the next hook is a compile error here rather than a surface that gates two questions out of three", path, strings.TrimSuffix(partial, "("))
 			}
