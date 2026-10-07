@@ -10,19 +10,8 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// scriptCaseLabels extracts the case labels of GetScript's switch(what).
 var scriptCaseLabels = regexp.MustCompile(`case '([a-z_]+)':`)
 
-// TestGetKindsMatchScript compares the accepted vocabulary against the script
-// that answers it, in BOTH directions.
-//
-// The two are separate literals — a Go map and a JavaScript switch — and nothing
-// but this test keeps them together. A kind accepted by Validate that the switch
-// does not answer throws "unknown get target" after the browser has already been
-// driven; a case added to the switch and not to the map is refused before the
-// page is touched, while the MCP schema (built from the same map) never offers
-// it. Comparing the sets is what makes either drift a test failure rather than a
-// surprise on merge.
 func TestGetKindsMatchScript(t *testing.T) {
 	inScript := map[string]bool{}
 	for _, match := range scriptCaseLabels.FindAllStringSubmatch(snapshot.GetScript, -1) {
@@ -58,15 +47,9 @@ func TestGetKindsMatchScript(t *testing.T) {
 	}
 }
 
-// TestGetScriptAnswersEveryAcceptedKind is the half the set comparison cannot
-// do: it runs each accepted kind in real Chrome and proves the switch reaches a
-// case, plus that the default arm still throws for anything outside the table.
-// Without the negative case a switch whose default silently returned undefined
-// would pass everything.
 func TestGetScriptAnswersEveryAcceptedKind(t *testing.T) {
 	ctx, _ := openFixture(t, getSurfaceFixture)
 
-	// Targets that make each element-scoped kind answerable on the fixture.
 	targets := map[string]string{
 		"value":    "#name",
 		"attr":     "#name",

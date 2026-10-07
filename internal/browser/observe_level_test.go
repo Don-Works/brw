@@ -23,8 +23,7 @@ func TestParseObserveLevel(t *testing.T) {
 		{name: "minimal", value: "minimal", wantLevel: ObserveMinimal, wantExplicit: true},
 		{name: "none", value: "none", wantLevel: ObserveNone, wantExplicit: true},
 		{name: "case and space", value: "  MINIMAL ", wantLevel: ObserveMinimal, wantExplicit: true},
-		// A value brw does not understand must be refused, not silently widened:
-		// a caller who asked for fewer tokens and got all of them cannot tell.
+
 		{name: "unknown", value: "summary", wantErr: true},
 		{name: "off is not a level", value: "off", wantErr: true},
 	}
@@ -91,8 +90,6 @@ func TestApplyToActionKeepsTheOutcomeAtEveryLevel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := tt.level.ApplyToAction(richActionResult())
 
-			// The outcome survives every level. An action whose result cannot say
-			// whether it worked is not a saving.
 			if !got.OK || got.Message == "" || got.Warning == "" || got.TabID == "" || got.NewTabID == "" || got.DurationMS == 0 {
 				t.Fatalf("level %q lost part of the outcome: %+v", tt.level, got)
 			}
@@ -119,8 +116,6 @@ func TestApplyToActionKeepsTheOutcomeAtEveryLevel(t *testing.T) {
 	}
 }
 
-// The default must be a no-op on the whole struct, not just on the fields the
-// test above names: that is what "absent means byte-identical" rests on.
 func TestObserveFullChangesNothing(t *testing.T) {
 	input := richActionResult()
 	if got := ObserveFull.ApplyToAction(input); !reflect.DeepEqual(got, input) {
@@ -144,8 +139,6 @@ func TestObserveFullChangesNothing(t *testing.T) {
 	}
 }
 
-// A batch's per-step record says which step failed. Trimming the closing
-// observation must never trim that, at any level.
 func TestApplyToBatchKeepsTheStepRecord(t *testing.T) {
 	batch := BatchResult{
 		OK:             false,
@@ -197,9 +190,6 @@ func TestPlanStepObserveLevel(t *testing.T) {
 	}
 }
 
-// A plan step result arrives as a typed ActionResult in-process and as a decoded
-// object over the upstream HTTP transport. Both must trim to the same shape, or
-// the same tool call answers differently depending on the topology.
 func TestApplyToPlanTrimsBothStepResultShapes(t *testing.T) {
 	decoded := func(result ActionResult) map[string]any {
 		data, err := json.Marshal(result)
@@ -255,9 +245,6 @@ func TestApplyToPlanTrimsBothStepResultShapes(t *testing.T) {
 	}
 }
 
-// A plan carries payloads that are not observations at all — a read, a
-// structured-data extraction. Trimming must leave those alone; dropping "url"
-// from a read result would corrupt the answer rather than shrink it.
 func TestApplyToPlanLeavesNonObservationPayloadsAlone(t *testing.T) {
 	read := map[string]any{"url": "https://fixture.test/", "title": "Doc", "main": "prose", "headings": []any{"H"}}
 	plan := PlanResult{OK: true, Steps: []PlanStepResult{
@@ -274,7 +261,6 @@ func TestApplyToPlanLeavesNonObservationPayloadsAlone(t *testing.T) {
 	}
 }
 
-// An explicit level applies to every step's observation, the last one included.
 func TestApplyToPlanHonoursAnExplicitLevel(t *testing.T) {
 	plan := PlanResult{OK: true, Steps: []PlanStepResult{
 		{Index: 0, Action: "click", OK: true, Result: richActionResult()},
@@ -295,10 +281,6 @@ func TestApplyToPlanHonoursAnExplicitLevel(t *testing.T) {
 	}
 }
 
-// planStepFixtures is one representative result per classified plan step verb,
-// in the shape that verb's runner produces. The table is checked against the
-// classification both ways, so a verb can neither be classified without a
-// fixture here nor trimmed on a shape nobody looked at.
 func planStepFixtures() map[string]struct {
 	result      any
 	wantTrimmed bool
@@ -315,15 +297,14 @@ func planStepFixtures() map[string]struct {
 		"press":      {result: richActionResult(), wantTrimmed: true},
 		"scroll":     {result: richActionResult(), wantTrimmed: true},
 		"hover":      {result: richActionResult(), wantTrimmed: true},
-		// Shaped the way the primitive answers: a message written from the url
-		// that was REQUESTED and a committed url that is somewhere else.
+
 		"navigate_to": {result: navigationActionResult(), wantTrimmed: true},
 		"find_act": {result: FindActResult{
 			Matched: snapshot.Element{Ref: "e9", Role: "button", Name: "Checkout"},
 			Action:  "click",
 			Result:  richActionResult(),
 		}, wantTrimmed: true},
-		// A step's own product is what the caller wrote the step to get.
+
 		"snapshot": {result: snapshot.PageSnapshot{
 			URL: "https://fixture.test/cart", Title: "Cart",
 			Elements: []snapshot.Element{{Ref: "e9", Role: "button", Name: "Checkout"}},
@@ -335,11 +316,6 @@ func planStepFixtures() map[string]struct {
 	}
 }
 
-// The trim is driven by a table keyed on the step verb, so the table has to be
-// exhaustive: a verb it does not know reports in full, which is safe but is a
-// silent hole in what observe claims to do. This checks the fixtures and the
-// classification against each other in both directions, then checks each verb's
-// payload actually trims (or survives) as its classification says.
 func TestEveryClassifiedPlanStepVerbTrimsAsItsPayloadAllows(t *testing.T) {
 	fixtures := planStepFixtures()
 	for _, verb := range ClassifiedPlanStepVerbs() {
@@ -370,11 +346,7 @@ func TestEveryClassifiedPlanStepVerbTrimsAsItsPayloadAllows(t *testing.T) {
 				if !strings.Contains(got, `"ok":true`) {
 					t.Fatalf("observe=none left a %q step unable to report its outcome: %s", verb, got)
 				}
-				// A verb whose result is a navigation keeps the committed url at
-				// every level, because that url IS its outcome and its message
-				// names the one that was requested. Every other observation drops
-				// it. Checked here for EVERY classified verb, so a sibling verb
-				// that navigates cannot be added as a plain observation.
+
 				if keptURL, wantURL := strings.Contains(got, `"url"`), IsNavigationAction(verb); keptURL != wantURL {
 					if wantURL {
 						t.Fatalf("observe=none dropped the committed url from a %q step while keeping a message that names the requested one: %s", verb, got)
@@ -390,9 +362,6 @@ func TestEveryClassifiedPlanStepVerbTrimsAsItsPayloadAllows(t *testing.T) {
 	}
 }
 
-// navigationActionResult is what a navigation primitive answers with: the
-// message is written from the url the caller ASKED for, and URL is the one the
-// browser committed to after the redirect.
 func navigationActionResult() ActionResult {
 	result := richActionResult()
 	result.Message = "navigated to https://fixture.test/cart"
@@ -400,11 +369,6 @@ func navigationActionResult() ActionResult {
 	return result
 }
 
-// The navigation exception is keyed on one set of verbs, not on a tool name and
-// not on a step verb: brw_navigate_to and a brw_plan navigate_to step run the
-// same primitive, and fixing the tool while leaving the step classified as a
-// plain observation is how the step went on reporting a destination brw never
-// verified. Both directions, over the whole domain of classified verbs.
 func TestEveryNavigationVerbIsClassifiedAsOne(t *testing.T) {
 	for _, verb := range ClassifiedPlanStepVerbs() {
 		classified := PlanStepVerbKeepsTheCommittedURL(verb)
@@ -416,8 +380,7 @@ func TestEveryNavigationVerbIsClassifiedAsOne(t *testing.T) {
 			t.Errorf("plan step verb %q is classified as a navigation but is not a navigation action", verb)
 		}
 	}
-	// The set itself has to be non-empty and reach the classification, or both
-	// directions above are vacuously true.
+
 	if len(NavigationActions()) == 0 {
 		t.Fatal("NavigationActions() is empty, so nothing above checked anything")
 	}
@@ -432,10 +395,6 @@ func TestEveryNavigationVerbIsClassifiedAsOne(t *testing.T) {
 	}
 }
 
-// A navigate_to plan step arrives typed in-process and as a decoded object over
-// the upstream HTTP proxy. Both drop the observation and both keep the url: the
-// shape a step arrives in is not something the caller chose, and the proxy is
-// the transport where a plan step is decoded rather than constructed.
 func TestApplyToPlanKeepsTheCommittedURLOnANavigateStep(t *testing.T) {
 	typedStep := navigationActionResult()
 	var decodedStep map[string]any
@@ -468,8 +427,7 @@ func TestApplyToPlanKeepsTheCommittedURLOnANavigateStep(t *testing.T) {
 					level, decodedOut["url"], decodedOut["message"])
 			}
 			if level == ObserveNone {
-				// The exception is one field wide: everything else still trims, or
-				// it is a way out of the parameter rather than a correction to it.
+
 				if len(typedOut.Elements) != 0 || typedOut.Snapshot != nil || typedOut.Title != "" {
 					t.Fatalf("observe=none left the observation on a typed navigate_to step: %+v", typedOut)
 				}
@@ -492,11 +450,6 @@ func mustJSON(t *testing.T, value any) string {
 	return string(data)
 }
 
-// A find_act step is an observation wrapped in {matched, action, result}. It
-// arrives typed in-process and decoded over the upstream HTTP transport, and
-// both have to trim — the shape-sniffing predicate this replaced trimmed
-// neither, so observe:"none" over two find_act steps returned two full element
-// lists on both transports.
 func TestApplyToPlanTrimsBothFindActShapes(t *testing.T) {
 	typedStep := FindActResult{
 		Matched: snapshot.Element{Ref: "e9", Role: "button", Name: "Checkout"},
@@ -543,10 +496,6 @@ func TestApplyToPlanTrimsBothFindActShapes(t *testing.T) {
 	}
 }
 
-// The snapshot a `snapshot` step fetched is the reason the step exists, and
-// SKILL.md sends agents to brw_plan for exactly that mid-flow snapshot. The
-// default intermediate trim used to delete it, so the documented way to get one
-// was a round trip that returned nothing.
 func TestApplyToPlanKeepsAStepsOwnSnapshot(t *testing.T) {
 	snap := snapshot.PageSnapshot{URL: "https://fixture.test/cart", Title: "Cart",
 		Elements: []snapshot.Element{{Ref: "e9", Role: "button", Name: "Checkout"}}}
@@ -579,10 +528,6 @@ func TestApplyToPlanKeepsAStepsOwnSnapshot(t *testing.T) {
 	}
 }
 
-// ApplyToPlan writes into copies. The caller's PlanResult shares the step slice
-// and any decoded map inside it, so trimming in place would edit a result that
-// may still be read or logged untrimmed — an aliasing bug that only shows up
-// the first time a plan result is read twice.
 func TestApplyToPlanDoesNotMutateItsInput(t *testing.T) {
 	decoded := map[string]any{"ok": true, "message": "clicked e4", "url": "https://fixture.test/cart",
 		"changed": []any{"e9"}, "elements": []any{map[string]any{"ref": "e9"}}}
@@ -604,10 +549,6 @@ func TestApplyToPlanDoesNotMutateItsInput(t *testing.T) {
 	}
 }
 
-// A navigation's outcome IS the destination, and the message is written from
-// the url that was REQUESTED before the observation reads the committed one. A
-// level that kept that message and dropped the url would report arriving
-// somewhere brw never verified.
 func TestApplyToNavigationKeepsTheCommittedURL(t *testing.T) {
 	for _, level := range []ObserveLevel{ObserveFull, ObserveMinimal, ObserveNone} {
 		result := richActionResult()
@@ -622,8 +563,7 @@ func TestApplyToNavigationKeepsTheCommittedURL(t *testing.T) {
 		if !got.OK || got.Message == "" {
 			t.Fatalf("level %q lost the outcome: %+v", level, got)
 		}
-		// Everything else still trims, or the exception would be a way out of
-		// the parameter rather than a correction to it.
+
 		if level == ObserveNone && (len(got.Elements) > 0 || len(got.Changed) > 0 || got.Title != "") {
 			t.Fatalf("ApplyToNavigation(none) kept more than the url: %+v", got)
 		}
@@ -633,10 +573,6 @@ func TestApplyToNavigationKeepsTheCommittedURL(t *testing.T) {
 	}
 }
 
-// ObserveMinimal on a batch is the same as ObserveFull because a BatchResult
-// has no element list to drop. That is worth pinning: it is the reason
-// brw_batch advertises its own schema text instead of promising a saving it
-// cannot make.
 func TestApplyToBatchMinimalIsTheSameAsFull(t *testing.T) {
 	batch := BatchResult{OK: true, TabID: "tab1", URL: "https://fixture.test/", Title: "T", Focus: "e1",
 		Version: 3, Changed: []string{"e1"}, StepsCompleted: 1,
