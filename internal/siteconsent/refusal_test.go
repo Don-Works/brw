@@ -8,17 +8,13 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 )
 
-// refusalInstances is one live value per refusal this package produces. The
-// enumeration test below reads the package's own source for every type that
-// implements error and fails on one this table does not carry, so a refusal
-// added next week cannot quietly classify as an infrastructure failure and get
-// retried forever by a scheduler.
 var refusalInstances = map[string]error{
 	"NotGrantedError":           &NotGrantedError{Origin: "https://example.test", Scope: ScopeRead},
 	"DeniedError":               &DeniedError{Origin: "https://example.test", Scope: ScopeRead, When: time.Unix(0, 0)},
@@ -30,11 +26,6 @@ var refusalInstances = map[string]error{
 	"LocalTargetError":          &LocalTargetError{Scheme: "file", Target: "/tmp/x"},
 }
 
-// TestEveryRefusalTypeIsRecognised enumerates the domain out of the source
-// rather than trusting a hand-kept list. A type in this package whose name ends
-// in Error and that has an Error() method is a refusal by construction; if
-// IsRefusal does not recognise it, a scheduled run reports a policy decision as
-// a transient fault.
 func TestEveryRefusalTypeIsRecognised(t *testing.T) {
 	declared := errorTypesInPackage(t)
 	if len(declared) < 5 {
@@ -49,19 +40,17 @@ func TestEveryRefusalTypeIsRecognised(t *testing.T) {
 		if !IsRefusal(instance) {
 			t.Errorf("IsRefusal does not recognise %s, so a scheduler would treat this refusal as an infrastructure failure and retry it", name)
 		}
-		// A refusal has to survive being wrapped: every surface between the gate
-		// and the caller adds context to it.
+
 		if !IsRefusal(fmt.Errorf("brw_click on https://example.test: %w", instance)) {
 			t.Errorf("IsRefusal loses %s once it is wrapped", name)
 		}
 	}
 	for name := range refusalInstances {
-		if !contains(declared, name) {
+		if !slices.Contains(declared, name) {
 			t.Errorf("refusalInstances names %s, which this package does not declare", name)
 		}
 	}
 
-	// The sentinel is not a type, so the scan above cannot see it.
 	if !IsRefusal(ErrPromptUnanswerable) {
 		t.Error("IsRefusal does not recognise ErrPromptUnanswerable")
 	}
@@ -69,8 +58,6 @@ func TestEveryRefusalTypeIsRecognised(t *testing.T) {
 		t.Error("IsRefusal loses ErrPromptUnanswerable once it is wrapped")
 	}
 
-	// And the other direction: an ordinary failure must not read as a policy
-	// decision, or a scheduler stops retrying something it should retry.
 	for _, notARefusal := range []error{
 		errors.New("bridge transport closed"),
 		errors.New("no tab: target closed"),
@@ -82,8 +69,6 @@ func TestEveryRefusalTypeIsRecognised(t *testing.T) {
 	}
 }
 
-// errorTypesInPackage returns every type declared in this package whose name
-// ends in Error and which has a value or pointer method named Error.
 func errorTypesInPackage(t *testing.T) []string {
 	t.Helper()
 	entries, err := os.ReadDir(".")
@@ -137,13 +122,4 @@ func receiverTypeName(expr ast.Expr) string {
 	default:
 		return ""
 	}
-}
-
-func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }

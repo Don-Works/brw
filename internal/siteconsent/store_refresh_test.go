@@ -7,11 +7,6 @@ import (
 	"time"
 )
 
-// TestASameLengthRewriteIsNoticed covers the rewrite a size-and-mtime check
-// cannot see: one record swapped for another of identical serialised length
-// inside a single modification-time tick. Revocation always shrinks the file, so
-// that half was safe either way; an allow replaced by a different allow, or by a
-// deny of the same field widths, is not.
 func TestASameLengthRewriteIsNoticed(t *testing.T) {
 	granted := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
@@ -35,8 +30,6 @@ func TestASameLengthRewriteIsNoticed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The replacement is written by another process, with every field the same
-	// width, and the file's timestamp put back to what it was.
 	other := filepath.Join(dir, "other.json")
 	elsewhere, err := NewStoreWithKey(other, fixtureKey)
 	if err != nil {
@@ -78,9 +71,65 @@ func TestASameLengthRewriteIsNoticed(t *testing.T) {
 	}
 }
 
-// TestADenyAnswersTheScopeItWasGiven proves the two decisions match at different
-// scopes. "Do not change things on this site" is not "do not look at this site",
-// and the prompt asks them as separate questions.
+func TestChangedStoreFailsClosedAndPreservesUnreadableData(t *testing.T) {
+	for _, kind := range []string{"malformed", "future schema", "directory", "removed"} {
+		t.Run(kind, func(t *testing.T) {
+			store := newTestStore(t)
+			grant := Grant{Origin: "https://example.test", Scope: ScopeAct, Decision: DecisionAllow, GrantedBy: "fixture-user"}
+			if _, err := store.Record(grant); err != nil {
+				t.Fatal(err)
+			}
+			original, err := os.ReadFile(store.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(store.Path()); err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case "malformed":
+				err = os.WriteFile(store.Path(), []byte(`{"version":`), 0600)
+			case "future schema":
+				err = os.WriteFile(store.Path(), []byte(`{"version":2,"grants":[]}`), 0600)
+			case "directory":
+				err = os.Mkdir(store.Path(), 0700)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, found := store.Lookup(grant.Origin, ScopeAct, time.Now()); found {
+				t.Fatal("an unreadable or removed store retained its previous authority")
+			}
+			if len(store.List()) != 0 {
+				t.Fatal("stale grants remained visible")
+			}
+			if kind != "removed" {
+				if len(store.Rejected()) != 1 {
+					t.Fatal("the load failure was not reported")
+				}
+				if _, err := store.Record(grant); err == nil {
+					t.Fatal("record overwrote an unreadable store")
+				}
+				if _, err := store.Revoke(grant.Origin, ""); err == nil {
+					t.Fatal("revoke ignored an unreadable store")
+				}
+				if _, err := store.RevokeAll(); err == nil {
+					t.Fatal("revoke-all ignored an unreadable store")
+				}
+				if err := os.Remove(store.Path()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(store.Path(), original, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, found := store.Lookup(grant.Origin, ScopeAct, time.Now()); !found {
+				t.Fatal("the restored authenticated store was not reloaded")
+			}
+		})
+	}
+}
+
 func TestADenyAnswersTheScopeItWasGiven(t *testing.T) {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
@@ -114,9 +163,6 @@ func TestADenyAnswersTheScopeItWasGiven(t *testing.T) {
 	}
 }
 
-// TestADenyOnActLeavesReadToBeAsked is the same rule at the guard: an agent
-// refused permission to change a site may still be granted permission to look at
-// it, without the refusal having to be revoked first.
 func TestADenyOnActLeavesReadToBeAsked(t *testing.T) {
 	guard := newTestGuard(t, AdminConfig{})
 	if _, err := guard.Store().Record(Grant{

@@ -13,15 +13,9 @@ import (
 	"time"
 )
 
-// storeVersion is the on-disk schema version. A file from a future version is
-// refused rather than partially read: honouring half of a record set whose
-// meaning has changed is how a revocation silently stops applying.
 const storeVersion = 1
 
-// RejectedRecord is one entry the store refused to load, kept so the reason can
-// be shown rather than swallowed. A grant that vanishes with no explanation
-// looks like a brw bug; a grant that vanishes with "not authenticated by this
-// profile's consent key" is the signal that someone wrote to the file.
+// RejectedRecord is one entry the store refused to load, kept so the reason can be shown rather than swallowed.
 type RejectedRecord struct {
 	Origin string `json:"origin"`
 	Scope  Scope  `json:"scope,omitempty"`
@@ -34,12 +28,6 @@ type storeFile struct {
 }
 
 // Store is the persistent set of consent records for one profile.
-//
-// Every read goes through the MAC: records are verified on load and re-verified
-// on every lookup, so a file rewritten by another process between two actions
-// cannot take effect without a valid key. That is what makes revocation apply on
-// the next action with no daemon restart - the store re-reads the file when its
-// modification time moves.
 type Store struct {
 	path      string
 	key       []byte
@@ -65,9 +53,7 @@ func OpenStore(path, keyPath string) (*Store, error) {
 	return store, nil
 }
 
-// NewStoreWithKey builds a store over an explicit key, for callers that manage
-// key material themselves (tests, and a managed machine that provisions the key
-// out of band).
+// NewStoreWithKey builds a store over an explicit key, for callers that manage key material themselves (tests, and a managed machine that provisions the key out of band).
 func NewStoreWithKey(path string, key []byte) (*Store, error) {
 	if len(key) < keyBytes {
 		return nil, fmt.Errorf("consent key holds %d bytes; at least %d are required", len(key), keyBytes)
@@ -89,26 +75,10 @@ func LedgerPathFor(grantPath string) string {
 	return filepath.Join(dir, base+"-ledger.jsonl")
 }
 
-// reload re-reads the file unconditionally.
 func (s *Store) reload() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.reloadLocked()
-}
-
-func (s *Store) reloadLocked() error {
-	data, err := os.ReadFile(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		s.grants = nil
-		s.rejected = nil
-		s.loadedSum = [sha256.Size]byte{}
-		s.loaded = false
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return s.parseLocked(data)
+	return s.refreshLocked()
 }
 
 func (s *Store) parseLocked(data []byte) error {
@@ -139,37 +109,30 @@ func (s *Store) parseLocked(data []byte) error {
 	return nil
 }
 
-// refreshLocked re-reads the file when it has changed underneath us.
-//
-// Revocation has to take effect on the next action without restarting the
-// daemon, and the revoking process is usually a different one (brwctl, or the
-// extension options page through the bridge). The file's CONTENT decides, not
-// its size and modification time: a record swapped for one of the same
-// serialised length inside a single mtime tick - an allow flipped to a deny with
-// the same field widths, or one origin for another of equal length - moves
-// neither, and the stale in-memory copy would keep deciding. The store is a
-// couple of kilobytes, so re-reading it per decision is not a cost worth a stale
-// grant.
-func (s *Store) refreshLocked() {
+func (s *Store) refreshLocked() error {
 	data, err := os.ReadFile(s.path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) && s.loaded {
-			_ = s.reloadLocked()
+	if errors.Is(err, os.ErrNotExist) {
+		s.grants, s.rejected, s.loaded = nil, nil, false
+		return nil
+	}
+	if err == nil {
+		if s.loaded && sha256.Sum256(data) == s.loadedSum {
+			return nil
 		}
-		return
+		err = s.parseLocked(data)
 	}
-	if s.loaded && sha256.Sum256(data) == s.loadedSum {
-		return
+	if err != nil {
+		s.grants, s.loaded = nil, false
+		s.rejected = []RejectedRecord{{Reason: err.Error()}}
 	}
-	_ = s.parseLocked(data)
+	return err
 }
 
-// List returns every loaded record, newest first. Expired records are included:
-// the point of the surface is to show the user what is there.
+// List returns every loaded record, newest first.
 func (s *Store) List() []Grant {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.refreshLocked()
+	_ = s.refreshLocked()
 	out := append([]Grant(nil), s.grants...)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].GrantedAt.After(out[j].GrantedAt) })
 	return out
@@ -179,23 +142,15 @@ func (s *Store) List() []Grant {
 func (s *Store) Rejected() []RejectedRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.refreshLocked()
+	_ = s.refreshLocked()
 	return append([]RejectedRecord(nil), s.rejected...)
 }
 
-// Lookup returns the record that decides origin at scope want, and whether one
-// was found. An expired record is not returned at all, so the caller re-prompts.
-//
-// The two decisions match at different scopes, deliberately. An ALLOW at act
-// covers a read, because an agent that may change a site may look at it. A DENY
-// runs the other way: "do not change things on this site" is not "do not look at
-// this site", and the prompt asks them as two questions, so a deny answers the
-// scope it was given and every scope that implies it - refusing read refuses act
-// too, refusing act leaves read to be asked.
+// Lookup returns the record that decides origin at scope want, and whether one was found.
 func (s *Store) Lookup(origin string, want Scope, now time.Time) (Grant, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.refreshLocked()
+	_ = s.refreshLocked()
 	var best Grant
 	var found bool
 	for _, grant := range s.grants {
@@ -209,10 +164,7 @@ func (s *Store) Lookup(origin string, want Scope, now time.Time) (Grant, bool) {
 		} else if !grant.Scope.covers(want) {
 			continue
 		}
-		// Re-verify on the decision path, not only on load. The in-memory copy
-		// came from a verified load, but re-checking here means no future code
-		// path can introduce an unverified record into the slice and have it
-		// authorise something.
+
 		if grant.Verify(s.key) != nil {
 			continue
 		}
@@ -227,7 +179,6 @@ func (s *Store) Lookup(origin string, want Scope, now time.Time) (Grant, bool) {
 }
 
 // Record writes one decision, replacing any record for the same origin+scope.
-// The returned grant carries the MAC that was persisted.
 func (s *Store) Record(grant Grant) (Grant, error) {
 	origin, err := CanonicalOrigin(grant.Origin)
 	if err != nil {
@@ -254,7 +205,9 @@ func (s *Store) Record(grant Grant) (Grant, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.refreshLocked()
+	if err := s.refreshLocked(); err != nil {
+		return Grant{}, err
+	}
 	kept := make([]Grant, 0, len(s.grants)+1)
 	for _, existing := range s.grants {
 		if existing.Origin == grant.Origin && existing.Scope == grant.Scope {
@@ -269,8 +222,7 @@ func (s *Store) Record(grant Grant) (Grant, error) {
 	return grant, nil
 }
 
-// Revoke removes the records for one origin. An empty scope removes every scope
-// on that origin. It reports how many records went.
+// Revoke removes the records for one origin.
 func (s *Store) Revoke(origin string, scope Scope) (int, error) {
 	canonical, err := CanonicalOrigin(origin)
 	if err != nil {
@@ -281,7 +233,9 @@ func (s *Store) Revoke(origin string, scope Scope) (int, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.refreshLocked()
+	if err := s.refreshLocked(); err != nil {
+		return 0, err
+	}
 	kept := make([]Grant, 0, len(s.grants))
 	removed := 0
 	for _, existing := range s.grants {
@@ -304,7 +258,9 @@ func (s *Store) Revoke(origin string, scope Scope) (int, error) {
 func (s *Store) RevokeAll() (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.refreshLocked()
+	if err := s.refreshLocked(); err != nil {
+		return 0, err
+	}
 	removed := len(s.grants)
 	if removed == 0 {
 		return 0, nil
@@ -315,9 +271,6 @@ func (s *Store) RevokeAll() (int, error) {
 	return removed, nil
 }
 
-// writeLocked persists grants atomically. A torn consent file is a file whose
-// records no longer verify, which fails closed - correct, but it would throw
-// away consent the user really gave, so the rename keeps it all-or-nothing.
 func (s *Store) writeLocked(grants []Grant) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return err
@@ -372,10 +325,7 @@ type LedgerEntry struct {
 	Reason           string    `json:"reason,omitempty"`
 }
 
-// AppendLedger records one consent event. The ledger is append-only and is NOT
-// MAC'd: it is evidence for a human reading it, never an input to a decision, so
-// signing it would imply a guarantee it cannot keep (anything that can append
-// can also truncate).
+// AppendLedger records one consent event.
 func (s *Store) AppendLedger(entry LedgerEntry) error {
 	if entry.At.IsZero() {
 		entry.At = time.Now().UTC()

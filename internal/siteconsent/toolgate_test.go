@@ -13,11 +13,6 @@ import (
 	"github.com/Don-Works/brw/internal/stepscan"
 )
 
-// stepRunners are the four functions that dispatch a plan or batch step, one
-// pair per backend. The gate's step table is checked against these rather than
-// against a second hand-written list: a verb added to a runner with no row in
-// StepActions is a step nothing decides, which is how a navigate_to step reached
-// an un-granted origin.
 var stepRunners = []struct {
 	file     string
 	function string
@@ -28,8 +23,6 @@ var stepRunners = []struct {
 	{"../extensionbridge/bridge_batch.go", "executeBatchStep"},
 }
 
-// TestEveryPlanAndBatchStepActionIsClassified is the anti-drift guard for the
-// sequence half of the gate.
 func TestEveryPlanAndBatchStepActionIsClassified(t *testing.T) {
 	implemented := map[string]bool{}
 	for _, runner := range stepRunners {
@@ -53,9 +46,6 @@ func TestEveryPlanAndBatchStepActionIsClassified(t *testing.T) {
 	}
 }
 
-// TestBothBackendsRunTheSameSteps keeps the two transports in step. A verb one
-// backend implements and the other does not is a flow that works until the user
-// switches transport.
 func TestBothBackendsRunTheSameSteps(t *testing.T) {
 	for _, function := range []string{"executePlanStep", "executeBatchStep"} {
 		direct := stepSet(t, "../browser/manager.go", function)
@@ -85,15 +75,10 @@ func args(t *testing.T, value map[string]any) []byte {
 	return raw
 }
 
-// pageAt answers every tab lookup with one origin, which is what an agent
-// driving a single page sees.
 func pageAt(origin string) PageOriginFunc {
 	return func(string) (string, error) { return origin, nil }
 }
 
-// TestEveryDestinationArgumentIsChecked drives the calls the reviewer walked
-// past the gate with. Each one names an un-granted origin in the argument that
-// tool really uses, so a rule reading the wrong field shows up here as a pass.
 func TestEveryDestinationArgumentIsChecked(t *testing.T) {
 	cases := []struct {
 		name string
@@ -131,8 +116,7 @@ func TestEveryDestinationArgumentIsChecked(t *testing.T) {
 			if refusal.Scope != c.want {
 				t.Fatalf("%s needs scope %q, the gate asked for %q", c.tool, c.want, refusal.Scope)
 			}
-			// The same call passes once the origin is granted at that scope, so
-			// the rule is a gate and not a blanket refusal.
+
 			if _, err := guard.Allow(GrantOptions{Origin: "https://ungranted.test", Scope: c.want, Actor: "fixture-user"}); err != nil {
 				t.Fatal(err)
 			}
@@ -154,15 +138,6 @@ func asNotGranted(err error, target **NotGrantedError) bool {
 	return ok
 }
 
-// TestEveryDeclaredDestinationFieldProducesACheck proves each field a TargetURL
-// rule DECLARES reads an argument that exists: a rule whose declared field the
-// probe cannot read produces no check at all, which is a row that looks like
-// enforcement and is not.
-//
-// It says nothing about whether the declaration is complete - a tool addressed
-// by an argument no rule names passes it, because there is no rule to walk. That
-// half is internal/mcp's TestEveryDestinationArgumentIsRefused, which reads the
-// argument names out of the published tool schemas instead.
 func TestEveryDeclaredDestinationFieldProducesACheck(t *testing.T) {
 	for name, rule := range ToolRules {
 		if rule.Target != TargetURL {
@@ -204,10 +179,6 @@ func TestEveryDeclaredDestinationFieldProducesACheck(t *testing.T) {
 	}
 }
 
-// TestPersonalDataIsClassifiedThroughEverySurface is acceptance criterion 4 for
-// the class that was reachable only through the single-tool path: a card-number
-// field filled as a plan or batch step is the same submission as one filled by
-// brw_fill, and wrapping it in a sequence must not lose the classification.
 func TestPersonalDataIsClassifiedThroughEverySurface(t *testing.T) {
 	label := func(ref string) string {
 		if ref == "e9" {
@@ -245,8 +216,7 @@ func TestPersonalDataIsClassifiedThroughEverySurface(t *testing.T) {
 			if !strings.Contains(err.Error(), "personal-data") {
 				t.Fatalf("the refusal does not name the class: %v", err)
 			}
-			// The typed value is not classified and must not be echoed: a card
-			// number in an error string is a card number in a transcript.
+
 			if strings.Contains(err.Error(), "4111") {
 				t.Fatalf("the refusal echoes the typed value: %v", err)
 			}
@@ -254,8 +224,6 @@ func TestPersonalDataIsClassifiedThroughEverySurface(t *testing.T) {
 	}
 }
 
-// TestASequenceIsGatedWhereItLands proves the walk: a sequence that navigates
-// and then acts needs act on the DESTINATION, not on the tab it started from.
 func TestASequenceIsGatedWhereItLands(t *testing.T) {
 	steps := []any{
 		map[string]any{"action": "navigate_to", "url": "https://elsewhere.test/form"},
@@ -284,8 +252,6 @@ func TestASequenceIsGatedWhereItLands(t *testing.T) {
 	}
 }
 
-// TestASequenceThatRetargetsIsCheckedAgainstTheTabItMovesTo covers the other way
-// a sequence changes where it lands.
 func TestASequenceThatRetargetsIsCheckedAgainstTheTabItMovesTo(t *testing.T) {
 	steps := []any{
 		map[string]any{"action": "focus_tab", "id": "tab-9"},
@@ -310,8 +276,6 @@ func TestASequenceThatRetargetsIsCheckedAgainstTheTabItMovesTo(t *testing.T) {
 		t.Fatalf("the refusal names %q, not the tab the sequence moved to", refusal.Origin)
 	}
 
-	// With no tab id there is nothing to resolve, so the gate refuses rather
-	// than checking the origin the sequence has already left.
 	unnamed := []any{
 		map[string]any{"action": "focus_tab"},
 		map[string]any{"action": "click", "ref": "e1"},
@@ -322,9 +286,6 @@ func TestASequenceThatRetargetsIsCheckedAgainstTheTabItMovesTo(t *testing.T) {
 	}
 }
 
-// TestReadIsEnforcedOnThePageItself is the half the table used to claim and not
-// hold: content already open in the profile, or reached by a redirect, is read
-// with no navigation for the gate to have caught.
 func TestReadIsEnforcedOnThePageItself(t *testing.T) {
 	for _, tool := range []string{"brw_read", "brw_snapshot", "brw_screenshot", "brw_find", "brw_get", "brw_read_data", "brw_console", "brw_observe"} {
 		t.Run(tool, func(t *testing.T) {
@@ -347,8 +308,6 @@ func TestReadIsEnforcedOnThePageItself(t *testing.T) {
 	}
 }
 
-// TestScriptedWaitNeedsAct keeps brw_wait_for from being a way to run the
-// script brw_evaluate needs act for.
 func TestScriptedWaitNeedsAct(t *testing.T) {
 	guard := newTestGuard(t, AdminConfig{})
 	if _, err := guard.Allow(GrantOptions{Origin: "https://shop.test", Scope: ScopeRead, Actor: "fixture-user"}); err != nil {
@@ -368,8 +327,6 @@ func TestScriptedWaitNeedsAct(t *testing.T) {
 	}
 }
 
-// TestAnUnclassifiedStepIsRefused proves the sequence walk fails closed: a verb
-// the table does not know is not a verb it silently passes.
 func TestAnUnclassifiedStepIsRefused(t *testing.T) {
 	guard := newTestGuard(t, AdminConfig{})
 	if _, err := guard.Allow(GrantOptions{Origin: "https://shop.test", Scope: ScopeAct, Actor: "fixture-user"}); err != nil {
@@ -381,9 +338,6 @@ func TestAnUnclassifiedStepIsRefused(t *testing.T) {
 	}
 }
 
-// TestLocalTargetsAreRefused covers the schemes that carry no origin but still
-// reach something. navpolicy passes non-network schemes in blocklist-only mode,
-// so "no origin to consent to" made brw_read_url a local file reader.
 func TestLocalTargetsAreRefused(t *testing.T) {
 	guard := newTestGuard(t, AdminConfig{})
 	local := []string{
@@ -402,7 +356,7 @@ func TestLocalTargetsAreRefused(t *testing.T) {
 			}
 		})
 	}
-	// The genuinely empty targets stay empty: there is no site there at all.
+
 	for _, target := range []string{"about:blank", "data:text/html,hi", "/relative/path"} {
 		if err := guard.CheckTool("brw_read_url", args(t, map[string]any{"url": target}), pageAt("https://shop.test/"), nil); err != nil {
 			t.Fatalf("%s was refused: %v", target, err)
@@ -410,14 +364,6 @@ func TestLocalTargetsAreRefused(t *testing.T) {
 	}
 }
 
-// TestUngatedToolsCarryAReason checks the two things a table on its own can
-// check: an entry with no reason is a tool somebody put there to make a test
-// pass, and a tool in both halves makes the classification meaningless.
-//
-// Whether a reason is TRUE is settled in internal/mcp by
-// TestUngatedToolsReachNoSite, which reads what each ungated tool's handler
-// actually calls. No string check here can do that, and this test does not
-// claim to.
 func TestUngatedToolsCarryAReason(t *testing.T) {
 	for name, reason := range UngatedTools {
 		if strings.TrimSpace(reason) == "" {
@@ -429,15 +375,6 @@ func TestUngatedToolsCarryAReason(t *testing.T) {
 	}
 }
 
-// TestEveryRunnerConsultsTheStepGate is the anti-drift guard for the runtime
-// half of the sequence gate.
-//
-// The dispatch-time walk can only place a step while the arguments are still
-// true, and they stop being true the moment a step navigates. A runner that does
-// not consult the step gate therefore runs its remaining steps against the
-// origin the sequence started on, which is the bypass this closes - and a second
-// backend that forgets the call is the same bypass reachable by switching
-// transport.
 func TestEveryRunnerConsultsTheStepGate(t *testing.T) {
 	for _, runner := range stepRunners {
 		if !functionCalls(t, runner.file, runner.function, "GateSequenceStep") {
@@ -447,8 +384,6 @@ func TestEveryRunnerConsultsTheStepGate(t *testing.T) {
 	}
 }
 
-// functionCalls reports whether the named function calls something spelled
-// name, as a bare call or through a package or receiver selector.
 func functionCalls(t *testing.T, path, function, name string) bool {
 	t.Helper()
 	parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
@@ -482,9 +417,6 @@ func functionCalls(t *testing.T, path, function, name string) bool {
 	return calls
 }
 
-// TestAStepAfterAnActingStepIsGatedWhereItLanded is the shape the reviewer
-// walked past: the sequence starts somewhere granted, a click navigates it
-// off-site, and the reads that follow come back from an origin nobody granted.
 func TestAStepAfterAnActingStepIsGatedWhereItLanded(t *testing.T) {
 	steps := map[string]any{"steps": []any{
 		map[string]any{"action": "click", "ref": "e1"},
@@ -497,7 +429,6 @@ func TestAStepAfterAnActingStepIsGatedWhereItLanded(t *testing.T) {
 	}
 	payload := args(t, steps)
 
-	// The dispatch-time walk cannot see past the click, and passes.
 	if err := guard.CheckTool("brw_batch", payload, pageAt("https://start.test/"), nil); err != nil {
 		t.Fatalf("the preflight refused a batch that starts on a granted origin: %v", err)
 	}
@@ -506,7 +437,7 @@ func TestAStepAfterAnActingStepIsGatedWhereItLanded(t *testing.T) {
 	if err := gate.Check(0, StepProbe{Action: "click", Ref: "e1"}, pageAt("https://start.test/"), nil); err != nil {
 		t.Fatalf("the click on the granted origin was refused: %v", err)
 	}
-	// The click navigated. Every later step is a read of somewhere else.
+
 	for index, step := range []StepProbe{{Action: "snapshot"}, {Action: "read"}} {
 		err := gate.Check(index+1, step, pageAt("https://elsewhere.test/inbox"), nil)
 		var refusal *NotGrantedError
@@ -517,8 +448,7 @@ func TestAStepAfterAnActingStepIsGatedWhereItLanded(t *testing.T) {
 			t.Fatalf("%s refused with %s (%s); it must name where the step landed", step.Action, refusal.Origin, refusal.Scope)
 		}
 	}
-	// With the destination granted the same steps run, so this is a gate and not
-	// a blanket refusal of anything a click reached.
+
 	if _, err := guard.Allow(GrantOptions{Origin: "https://elsewhere.test", Scope: ScopeRead, Actor: "fixture-user"}); err != nil {
 		t.Fatal(err)
 	}
@@ -527,8 +457,6 @@ func TestAStepAfterAnActingStepIsGatedWhereItLanded(t *testing.T) {
 	}
 }
 
-// TestAnActingStepAfterAnotherIsGatedWhereItLanded is the same walk for the act
-// scope: a read grant on the destination is not permission to type into it.
 func TestAnActingStepAfterAnotherIsGatedWhereItLanded(t *testing.T) {
 	payload := args(t, map[string]any{"steps": []any{
 		map[string]any{"action": "click", "ref": "e1"},
@@ -551,9 +479,6 @@ func TestAnActingStepAfterAnotherIsGatedWhereItLanded(t *testing.T) {
 	}
 }
 
-// TestADeferredActionIsClassifiedAtTheStep proves the confirmation moved rather
-// than vanished: the preflight cannot place the fill, so it does not ask, and
-// the step gate asks about it against the origin it really runs on.
 func TestADeferredActionIsClassifiedAtTheStep(t *testing.T) {
 	label := func(ref string) string {
 		if ref == "e9" {
@@ -584,9 +509,6 @@ func TestADeferredActionIsClassifiedAtTheStep(t *testing.T) {
 	}
 }
 
-// TestCookiesAreCheckedAgainstTheTabTheyAreReadFrom is the reviewer's cookie
-// walk: a list addressed by domain does not read that domain, it reads the TAB
-// and filters what comes back, so the tab is a site the call reaches.
 func TestCookiesAreCheckedAgainstTheTabTheyAreReadFrom(t *testing.T) {
 	guard := newTestGuard(t, AdminConfig{})
 	if _, err := guard.Allow(GrantOptions{Origin: "https://notbank.test", Scope: ScopeRead, Actor: "fixture-user"}); err != nil {
@@ -608,8 +530,6 @@ func TestCookiesAreCheckedAgainstTheTabTheyAreReadFrom(t *testing.T) {
 		t.Fatalf("the granted listing was still refused: %v", err)
 	}
 
-	// A domain-addressed WRITE never consults the tab, so it is checked against
-	// the domain alone and a tab grant is neither required nor sufficient.
 	write := args(t, map[string]any{"action": "set", "domain": "notbank.test", "name": "a", "value": "b"})
 	err = guard.CheckTool("brw_cookies", write, pageAt("https://bank.test/accounts"), nil)
 	if !asNotGranted(err, &refusal) || refusal.Origin != "https://notbank.test" || refusal.Scope != ScopeAct {
@@ -617,12 +537,6 @@ func TestCookiesAreCheckedAgainstTheTabTheyAreReadFrom(t *testing.T) {
 	}
 }
 
-// TestEveryCookieActionIsClassified reads the verbs brw_cookies accepts out of
-// its own validator and fails on one the scope rule does not name.
-//
-// That is what stops the next verb being missed: the hole here was a rule
-// written for the writes and applied to a list, and a new verb inheriting the
-// wrong half of it would look exactly the same.
 func TestEveryCookieActionIsClassified(t *testing.T) {
 	actions, err := stepscan.SwitchCases("../browser/manager_cookies.go", "Validate", "Action")
 	if err != nil {

@@ -12,9 +12,7 @@ func TestTerminalPrompterAnswers(t *testing.T) {
 		name  string
 		input string
 		want  bool
-		// unanswerable marks the case where nobody is at the other end. It is
-		// not a "no": the caller records an answer, and a recorded deny nobody
-		// gave survives restarts.
+
 		unanswerable bool
 	}{
 		{name: "y", input: "y\n", want: true},
@@ -68,9 +66,6 @@ func TestTerminalPrompterConfirmNamesTheRisk(t *testing.T) {
 	}
 }
 
-// TestTerminalPrompterDrivesTheGuard proves the shipped prompter satisfies the
-// interface the guard actually calls, rather than only matching it at compile
-// time.
 func TestTerminalPrompterDrivesTheGuard(t *testing.T) {
 	store, err := NewStoreWithKey(filepath.Join(t.TempDir(), "site-grants.json"), fixtureKey)
 	if err != nil {
@@ -82,7 +77,7 @@ func TestTerminalPrompterDrivesTheGuard(t *testing.T) {
 	}
 	guard.SetGrantor("fixture-user")
 	var out strings.Builder
-	// One answer only: the second Authorize must be answered from the record.
+
 	guard.SetPrompter(NewTerminalPrompter(strings.NewReader("y\n"), &out))
 
 	if err := guard.Authorize("https://asked.test/page", ScopeRead); err != nil {
@@ -96,9 +91,6 @@ func TestTerminalPrompterDrivesTheGuard(t *testing.T) {
 	}
 }
 
-// TestClosedStdinRecordsNothing is the other half: a prompt nobody answered must
-// refuse the call and leave the store empty, so the next run asks again instead
-// of finding a "no" the user never gave.
 func TestClosedStdinRecordsNothing(t *testing.T) {
 	store, err := NewStoreWithKey(filepath.Join(t.TempDir(), "site-grants.json"), fixtureKey)
 	if err != nil {
