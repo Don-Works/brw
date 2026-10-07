@@ -29,6 +29,7 @@ SYNTHETIC_HOME_FIXTURES = {
 
 
 SYNTHETIC_VECTOR_WAIVERS = {
+	"scripts/test_oss_hygiene.py": {"private network address"},
     "internal/http/server_guard_test.go": {"tailscale host"},
     "internal/browser/upload_test.go": {"private network address"},
     "internal/extensionbridge/bridge_release_conn_test.go": {"credential literal"},
@@ -57,7 +58,7 @@ PATTERNS = [
 
     ("operator machine name", r"\bmax-(mac|air)\b"),
     ("tailscale host", r"[a-z0-9-]+\.ts\.net"),
-    ("private network address", r"\b(10|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}(\.\d{1,3})?\b"),
+    ("private network address", r"\b(?:10(?:\.\d{1,3}){3}|(?:192\.168|172\.(?:1[6-9]|2\d|3[01]))(?:\.\d{1,3}){2})\b"),
     ("credential literal", r"(?i)\b(api[_-]?key|secret|token|passwd|password|bearer)\b\s*[:=]\s*['\"][^'\"]{8,}"),
     ("aws access key", r"\bAKIA[0-9A-Z]{16}\b"),
     ("private key block", r"BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY"),
