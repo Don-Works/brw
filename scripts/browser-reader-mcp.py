@@ -114,7 +114,13 @@ def bounded_result(report, trace_id, elapsed_ms, artifact_dir=None):
         trace['answer_model_enabled'] = bool(mode.get('answer_model'))
         if mode.get('classifier') in ('off', 'shadow', 'select'):
             trace['classifier'] = mode['classifier']
-    return {kind: answer, 'source': source, 'trace': trace}
+    result = {kind: answer, 'source': source, 'trace': trace}
+    if 'fallback' in packet:
+        fallback = packet['fallback']
+        if kind != 'excerpt' or not isinstance(fallback, dict) or set(fallback) != {'stage', 'reason'} or fallback['stage'] not in USAGE.FALLBACK_STAGES or fallback['reason'] not in USAGE.FALLBACK_REASONS:
+            raise ValueError('invalid_report')
+        result['fallback'] = fallback
+    return result
 
 
 class Server:
@@ -242,6 +248,17 @@ class Server:
                     process.wait()
                     return
                 time.sleep(.01)
+        elif os.name == 'nt' and process.poll() is None:
+            try:
+                result = subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                if result.returncode:
+                    raise OSError('Worker process-tree cleanup failed')
+                process.wait(timeout=1)
+            except (OSError, subprocess.TimeoutExpired):
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=1)
+                raise RuntimeError('Worker process-tree cleanup failed') from None
         elif process.poll() is None:
             process.terminate()
             try:
@@ -261,6 +278,7 @@ class Server:
         returncode = None
         error_kind = None
         error_detail = None
+        fallback = {}
         stderr_bytes = bytearray()
         stderr_thread = None
         stderr_stop = threading.Event()
@@ -324,6 +342,7 @@ class Server:
             if len(raw) > MAX_REPORT:
                 raise ValueError('report_too_large')
             packet = bounded_result(decode(raw), trace_id, (time.monotonic()-started)*1000, directory)
+            fallback = packet.get('fallback', {})
             result = {'content': [{'type': 'text', 'text': json.dumps(packet, ensure_ascii=False, allow_nan=False, separators=(',', ':'))}]}
         except Exception as error:
             allowed = {'deadline_exceeded', 'worker_failed', 'report_too_large', 'invalid_report', 'invalid_answer', 'cancelled'}
@@ -352,7 +371,7 @@ class Server:
                     output_bytes = self.result(request_id, result)
                 self.active.pop(request_id, None)
             elapsed = time.monotonic()-started
-            self.ledger.write('adapter', 'transport', trace_id, job_id=trace_id, started_at=started_at, finished_at=USAGE.timestamp(), duration_ms=round(elapsed*1000, 3), duration_us=round(elapsed*1000000), input_bytes=job.get('input_bytes'), output_bytes=output_bytes, representation='jsonrpc', outcome='cancelled' if job['cancelled'] else 'deadline_exceeded' if error_kind == 'deadline_exceeded' else 'error' if error_kind else 'success', cancelled=job['cancelled'], cleanup_ms=cleanup_ms)
+            self.ledger.write('adapter', 'transport', trace_id, job_id=trace_id, started_at=started_at, finished_at=USAGE.timestamp(), duration_ms=round(elapsed*1000, 3), duration_us=round(elapsed*1000000), input_bytes=job.get('input_bytes'), output_bytes=output_bytes, representation='jsonrpc', outcome='cancelled' if job['cancelled'] else 'deadline_exceeded' if error_kind == 'deadline_exceeded' else 'error' if error_kind else 'success', cancelled=job['cancelled'], cleanup_ms=cleanup_ms, fallback_stage=fallback.get('stage'), fallback_reason=fallback.get('reason'))
 
     def serve(self, source):
         while not self.closed:
