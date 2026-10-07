@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Don-Works/brw/internal/approval"
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/siteconsent"
 	"github.com/Don-Works/brw/internal/snapshot"
@@ -172,6 +173,9 @@ func (s *Server) pageToolReport(ctx context.Context, invocation snapshot.PageToo
 // Without confirm-actions it costs nothing: the listing it needs is one
 // evaluate, and it is skipped entirely.
 func (s *Server) confirmPageTool(ctx context.Context, name, frame string) error {
+	if approval.IsExecution(ctx) {
+		return nil
+	}
 	if !s.consent.Enabled() || !s.consent.ConfirmActions() {
 		return nil
 	}

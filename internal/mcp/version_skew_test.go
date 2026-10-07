@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -66,5 +67,43 @@ func TestWithSkewNoteAppendsWithoutTouchingStructuredContent(t *testing.T) {
 	}
 	if withSkewNote("plain", "skew") != "plain" {
 		t.Fatal("a non-map result must pass through unchanged")
+	}
+}
+
+func TestIdentityReportsBothVersionOwners(t *testing.T) {
+	saved := Version
+	t.Cleanup(func() { Version = saved })
+	Version = "0.21.0"
+	for _, tt := range []struct {
+		name, daemon, alignment string
+		err                     error
+	}{
+		{name: "matched", daemon: "0.21.0", alignment: "matched"},
+		{name: "older daemon", daemon: "0.20.0", alignment: "mismatch"},
+		{name: "newer daemon", daemon: "0.22.0", alignment: "mismatch"},
+		{name: "unreported", alignment: "unknown"},
+		{name: "unreachable", alignment: "unknown", err: errors.New("refused")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			up := &fakeUpstream{fakeController: &fakeController{}, version: tt.daemon, err: tt.err}
+			s := New(up)
+			result, rpcErr := s.callTool(context.Background(), "brw_identity", json.RawMessage(`{}`))
+			if rpcErr != nil {
+				t.Fatal(rpcErr)
+			}
+			payload := decodeToolJSON(t, result)
+			for key, want := range map[string]string{"version": Version, "proxy_version": Version, "daemon_version": tt.daemon, "version_alignment": tt.alignment} {
+				if got := payload[key]; got != want {
+					t.Errorf("%s = %v, want %q", key, got, want)
+				}
+			}
+			note := s.versionSkewNote(context.Background())
+			if tt.alignment == "mismatch" && (!strings.Contains(note, "restart the affected daemon") || !strings.Contains(note, "0.21.0")) {
+				t.Fatalf("skew remedy does not identify both owners: %q", note)
+			}
+			if up.calls != 1 {
+				t.Fatalf("identity and note queried the daemon %d times", up.calls)
+			}
+		})
 	}
 }

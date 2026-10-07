@@ -90,12 +90,14 @@ find results or action observations. Labels also get refs: select the actual
 control, never guess by number. Discard refs across navigation. `tab_id` must
 be a string, including when a gateway returned a numeric ID.
 
+For `approval_required`, follow [operator approvals](references/approvals.md).
+
 ## If your tool list looks short
 
 `brwd --mcp` starts with 14 tools in `auto` mode and grows as you search.
-The full surface is 98 tools on a direct-CDP daemon (97 on `--remote`,
-96 on the Chrome opt-in lane, 92 on a plugin-supplied off-host browser,
-82 on the extension bridge). Small initial catalogues reduce attached schemas.
+The full surface is 100 tools on a direct-CDP daemon (99 on `--remote`,
+98 on the Chrome opt-in lane, 94 on a plugin-supplied off-host browser,
+84 on the extension bridge). Small initial catalogues reduce attached schemas.
 
 ```json
 {"name":"brw_tools","arguments":{"query":"read the console"}}
@@ -114,6 +116,8 @@ surface is `GET /api/skill` or `brw skill`. A disk copy may describe an older
 installation. A gateway may also have an older tool schema; see the
 [gateway reference](references/execute-code-gateway.md) before using a new argument.
 
+For proxies, compare `proxy_version` with `daemon_version`.
+
 ## Read less, act precisely
 
 | Need | Start here |
@@ -125,6 +129,8 @@ installation. A gateway may also have an older tool schema; see the
 | Long document | `brw_read({include:["headings"]})`, then `section` and bounded `max_chars` |
 | Known ready, short page | `brw_read({settle_ms:0})`; default 800 ms, maximum 5000 |
 | Many actions | `brw_batch`, tab pinned with a `focus_tab` step |
+| Large JS result | Project fields inside `brw_evaluate`; page with `offset`/`max_bytes` |
+| Repeated change checks | `brw_watch_page` and `brw_page_events`; persist the cursor after processing |
 | Large screenshot, PDF or download | Save/capture an artifact and return its metadata |
 
 Delta history retains at most eight baselines and 2 MiB of serialized state per

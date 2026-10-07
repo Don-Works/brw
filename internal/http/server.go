@@ -16,6 +16,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Don-Works/brw/internal/approval"
+	"github.com/Don-Works/brw/internal/approvalgate"
 	"github.com/Don-Works/brw/internal/artifact"
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
@@ -30,10 +32,13 @@ import (
 )
 
 type Server struct {
-	pageWatch pagewatch.API
-	manager   browser.Controller
-	artifacts artifact.API
-	recipes   recipe.API
+	approvalGate          *approvalgate.Gate
+	approvals             *approval.Store
+	approvalOperatorToken string
+	pageWatch             pagewatch.API
+	manager               browser.Controller
+	artifacts             artifact.API
+	recipes               recipe.API
 	// baselineRoutes answers "does the private provider own this recipe, or the
 	// page this capture is of". A proxying daemon runs brw_baseline itself and
 	// has no provider of its own, so without this hop it would route every
@@ -135,7 +140,10 @@ func NewWithIdentity(addr string, manager browser.Controller, identity brwidenti
 	// The idle tracker sits outermost so a request that a guard refuses still
 	// counts as somebody using the daemon: a client being told no repeatedly is
 	// not an abandoned daemon.
-	s.server.Handler = s.idleMiddleware(s.bearerGuard(s.usageMiddleware(s.hostGuard(s.artifactPrivacyHeaders(s.consentMiddleware(s.leaseMiddleware(mux)))))))
+	common := func(next http.Handler) http.Handler {
+		return s.usageMiddleware(s.hostGuard(s.artifactPrivacyHeaders(s.consentMiddleware(s.leaseMiddleware(s.approvalMiddleware(next))))))
+	}
+	s.server.Handler = s.idleMiddleware(s.approvalRoutes(s.bearerGuard(common(mux)), common))
 	return s
 }
 
@@ -334,6 +342,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/approvals/{id}", s.approvalStatus)
 	mux.HandleFunc("POST /api/watchers/register", s.watchPage)
 	mux.HandleFunc("POST /api/watchers/manage", s.pageWatchers)
 	mux.HandleFunc("POST /api/watchers/events", s.pageEvents)
@@ -2665,6 +2674,12 @@ func writeResult(w http.ResponseWriter, value any, err error) {
 }
 
 func writeError(w http.ResponseWriter, err error) {
+	if detail := approvalgate.ErrorDetails(err); detail != nil {
+		w.Header().Set(usagelog.HeaderErrorClass, "approval_required")
+		w.Header().Set(usagelog.HeaderErrorFingerprint, usagelog.Fingerprint("approval required"))
+		writeJSON(w, http.StatusConflict, detail)
+		return
+	}
 	var refused *browser.TakeoverRefusedError
 	if errors.As(err, &refused) {
 		w.Header().Set(usagelog.HeaderErrorClass, usagelog.ClassifyError(err))

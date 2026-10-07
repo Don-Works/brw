@@ -116,6 +116,9 @@ func (s *Server) currentPageOrigin(ctx context.Context, want string) (string, er
 	}
 	for _, tab := range tabs {
 		if want != "" && tab.ID == want {
+			if err := s.approvalGate.CheckURL(tab.URL); err != nil {
+				return "", err
+			}
 			return tab.URL, nil
 		}
 	}
@@ -123,6 +126,9 @@ func (s *Server) currentPageOrigin(ctx context.Context, want string) (string, er
 		return "", fmt.Errorf("site consent cannot decide: tab %s is not open, so there is no origin to check this action against", want)
 	}
 	if tab, ok := browser.UntargetedTab(ctx, s.manager, tabs); ok {
+		if err := s.approvalGate.CheckURL(tab.URL); err != nil {
+			return "", err
+		}
 		return tab.URL, nil
 	}
 	return "", fmt.Errorf("site consent cannot decide: no active tab, so there is no origin to check this action against")

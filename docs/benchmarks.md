@@ -477,7 +477,7 @@ level to trim.
 
 ## Tool catalogue
 
-The measured MCP catalogues are 98 tools / ~37.9k tokens for `all`, 26 / ~11.4k
+The measured MCP catalogues are 100 tools / ~38.1k tokens for `all`, 26 / ~11.4k
 for `core`, 13 / ~6.4k for `minimal`, and 14 / ~6.6k initially for the default
 `auto` profile — the same figures README.md and docs/agent-guide.md quote, from
 `scripts/measure-tool-catalogue.py`, which measures a direct-CDP daemon. Thus
@@ -493,20 +493,20 @@ without them is what left this section naming two different sizes for `all`.
 That is the trade: a fixed per-turn catalogue cost against a per-action saving
 that scales with the length of the flow.
 
-A daemon whose identity names a transport advertises fewer than the 101 tools
+A daemon whose identity names a transport advertises fewer than the 103 tools
 the catalogue holds. The three extension-only tab-group tools drop on every CDP
-lane, leaving the 98 above on direct CDP. `--remote` drops
-`brw_set_download_path` as well (97): brw did not start that browser, so it will
+lane, leaving the 100 above on direct CDP. `--remote` drops
+`brw_set_download_path` as well (99): brw did not start that browser, so it will
 not retarget its downloads. The Chrome opt-in lane drops `brw_state` on top of
-that (96), because it drives the browser its user is signed into. A
+that (98), because it drives the browser its user is signed into. A
 plugin-supplied off-host browser drops `brw_downloads`, `brw_upload_file` and
-`brw_clipboard` and `brw_screenshot_save` as well as `brw_state` (92), because these name something on
+`brw_clipboard` and `brw_screenshot_save` as well as `brw_state` (94), because these name something on
 this machine and that browser is on another: three resolve a path or the
 clipboard on the host the browser runs on, screenshot saving writes on this
 host, and session state reads this host's
 session-snapshot store. Twelve more drop on the extension
 bridge — incognito, contexts and cookies, the seven page-environment overrides,
-clipboard, the two held-key tools, pushState and session snapshots — leaving 82.
+clipboard, the two held-key tools, pushState and session snapshots — leaving 84.
 Only `all` is narrowed this way; `core`, `minimal` and `auto` advertise the same
 tools on every transport.
 

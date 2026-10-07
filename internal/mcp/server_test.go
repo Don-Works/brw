@@ -1172,6 +1172,15 @@ type resolvingFakeController struct{ fakeController }
 
 func (resolvingFakeController) ResolveActiveTabID(context.Context) string { return "auto-active" }
 
+func TestApprovalControlToolsDoNotResolveActiveTab(t *testing.T) {
+	for _, name := range []string{"brw_approval_status", "brw_approval_resume"} {
+		ctx := pinActiveTabForTool(context.Background(), resolvingFakeController{}, name)
+		if got := browser.TabIDFromContext(ctx); got != "" {
+			t.Fatalf("%s resolved active tab %q", name, got)
+		}
+	}
+}
+
 func TestPinActiveTabForToolMarksServerSelectionForOwnershipValidation(t *testing.T) {
 	ctx := pinActiveTabForTool(context.Background(), resolvingFakeController{}, "brw_read")
 	if got := browser.TabIDFromContext(ctx); got != "auto-active" {

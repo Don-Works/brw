@@ -553,8 +553,8 @@ Core MCP tools include:
 
 Use `--mcp-tools` to shrink the advertised catalogue while keeping every tool
 callable. The catalogue is re-sent on every request, so a narrower profile saves
-tokens on every turn: on a direct-CDP daemon `all` costs ~37.9k tokens across
-98 tools, `core` ~11.4k, `minimal` ~6.4k, and `auto` starts at ~6.6k and grows
+tokens on every turn: on a direct-CDP daemon `all` costs ~38.1k tokens across
+100 tools, `core` ~11.4k, `minimal` ~6.4k, and `auto` starts at ~6.6k and grows
 only as the agent discovers tools it needs via `brw_tools` (measure with
 `scripts/measure-tool-catalogue.py`).
 
@@ -653,6 +653,9 @@ Backend-specific notes:
   plan/batch steps alike, and fails CLOSED when nobody is there to confirm. List and revoke with `brwctl grants`, the extension
   options page, or `brw grants`. Opt-in; off by default.
   See [docs/site-permissions.md](docs/site-permissions.md).
+  `--approvals` adds a separate authenticated operator inbox for asynchronous
+  decisions and exact, single-use retries; it implies `--confirm-actions`.
+  Setup and boundaries: [human approvals](docs/approvals.md).
 - **Content-boundary navigation guard**: `--content-nav-guard` (any CDP transport; not the extension bridge)
   refuses a top-level navigation that page content initiated to another site — an
   injected link click, a meta refresh, a script `location` assignment — while

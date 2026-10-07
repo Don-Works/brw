@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Don-Works/brw/internal/approval"
+	"github.com/Don-Works/brw/internal/approvalgate"
 	"github.com/Don-Works/brw/internal/artifact"
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
@@ -987,6 +989,9 @@ func (c *Controller) doWithClient(client *http.Client, req *http.Request, out an
 }
 
 func (c *Controller) doWithClientLimit(client *http.Client, req *http.Request, out any, maxResponseBytes int64) error {
+	if id := approval.RequestID(req.Context()); id != "" {
+		req.Header.Set("X-Brw-Approval-Id", id)
+	}
 	req.Header.Set(usagelog.HeaderSessionID, c.sessionID)
 	req.Header.Set(usagelog.HeaderOwnerID, c.ownerID)
 	requestID := usagelog.RequestID(req.Context())
@@ -1060,6 +1065,18 @@ func (c *Controller) doRequestWithLimit(client *http.Client, req *http.Request, 
 			// A refusal a human's hold produced has to stay a typed refusal
 			// across the proxy hop. errors.As is the contract an agent branches
 			// on, and it is exactly what flattening this to prose would break.
+			if strings.HasPrefix(payload.Code, "approval_") {
+				var required approvalgate.RequiredError
+				if json.Unmarshal(data, &required) == nil && required.RequestID != "" && required.Status != "" {
+					return &required
+				}
+				var detail struct {
+					ID      string `json:"approval_id"`
+					Message string `json:"message"`
+				}
+				_ = json.Unmarshal(data, &detail)
+				return &approval.Error{Code: strings.TrimPrefix(payload.Code, "approval_"), RequestID: detail.ID, Message: detail.Message}
+			}
 			if payload.Code == browser.TakeoverRefusedCode {
 				return &browser.TakeoverRefusedError{
 					Action:    payload.Action,

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Don-Works/brw/internal/approvalgate"
 	"github.com/Don-Works/brw/internal/artifact"
 	"github.com/Don-Works/brw/internal/baseline"
 	"github.com/Don-Works/brw/internal/browser"
@@ -37,14 +38,15 @@ import (
 var Version = "dev"
 
 type Server struct {
-	pageWatch   pagewatch.API
-	manager     browser.Controller
-	skew        versionSkew
-	artifacts   artifact.API
-	recipes     recipe.API
-	toolProfile string // all, core, minimal, or progressive auto
-	navPolicy   *navpolicy.Policy
-	idleExit    time.Duration
+	approvalGate *approvalgate.Gate
+	pageWatch    pagewatch.API
+	manager      browser.Controller
+	skew         versionSkew
+	artifacts    artifact.API
+	recipes      recipe.API
+	toolProfile  string // all, core, minimal, or progressive auto
+	navPolicy    *navpolicy.Policy
+	idleExit     time.Duration
 	// activity reports work to an owner outside this server. Nil by default;
 	// see SetActivityHook.
 	activity  func() func()
@@ -852,6 +854,8 @@ type activeTabResolver interface {
 // focus_tab/open). list_tabs in particular must stay free of the extra round
 // trip the task brief calls out.
 var tabAgnosticTools = map[string]bool{
+	"brw_approval_status": true,
+	"brw_approval_resume": true,
 	"brw_watch_page":      true,
 	"brw_page_watchers":   true,
 	"brw_page_events":     true,
@@ -923,8 +927,11 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	}
 	// Site consent runs before the switch, so a refused call dispatches nothing.
 	// It is a no-op unless a consent store was configured.
-	if err := s.enforceSiteConsent(ctx, name, args); err != nil {
-		return toolError(err), nil
+	consentErr := s.enforceSiteConsent(ctx, name, args)
+	var approvalErr error
+	ctx, args, approvalErr = s.checkApproval(ctx, name, args, consentErr)
+	if approvalErr != nil {
+		return toolError(approvalErr), nil
 	}
 	// The checks the dispatch-time gate cannot make: a step lands where an
 	// earlier step left the tab, and a daemon-side fetch lands where a redirect
@@ -932,6 +939,16 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 	// actually reaches.
 	ctx = s.withConsentHooks(ctx, name, args)
 	switch name {
+	case "brw_approval_status":
+		var req struct {
+			ID string `json:"approval_id"`
+		}
+		if err := unmarshalStrictArgs(args, &req); err != nil {
+			return nil, invalid(err)
+		}
+		return toolJSON(s.approvalStatus(ctx, req.ID))
+	case "brw_approval_resume":
+		return s.resumeApproval(ctx, args)
 	case discoveryToolName:
 		var req struct {
 			Query string `json:"query"`
@@ -955,11 +972,13 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		// windows, because its whole job is to tell an agent which profile this
 		// namespace drives before it touches a tab. tabAgnosticTools keeps it
 		// off the active-tab resolution path so it never blocks on the bridge.
-		return toolJSON(map[string]any{
+		payload := map[string]any{
 			"identity":  s.identity,
 			"version":   Version,
 			"connected": !s.identity.Empty(),
-		}, nil)
+		}
+		s.identityVersions(ctx, payload)
+		return toolJSON(payload, nil)
 	case skillToolName:
 		// Served from the binary, never from disk: the whole point is that the
 		// manual and the tool surface it describes come from one build.
@@ -2582,6 +2601,9 @@ func toolOK(err error) (any, *rpcError) {
 }
 
 func toolError(err error) any {
+	if detail := approvalgate.ErrorDetails(err); detail != nil {
+		return map[string]any{"isError": true, "structuredContent": detail, "content": []toolContent{{Type: "text", Text: err.Error()}}}
+	}
 	out := map[string]any{
 		"isError": true,
 		"content": []toolContent{{Type: "text", Text: err.Error()}},
@@ -2637,6 +2659,8 @@ func canonicalToolName(name string) string {
 
 func tools() []map[string]any {
 	catalogue := []map[string]any{
+		tool("brw_approval_resume", "Execute one approved request using its exact original tool and arguments. Changed state or arguments require new approval; consumed requests cannot be replayed. This tool cannot approve requests.", object(map[string]any{"approval_id": stringSchema("Approved request ID."), "tool": stringSchema("Original brw tool name."), "arguments": map[string]any{"type": "object", "description": "Exact original tool arguments."}}, []string{"approval_id", "tool", "arguments"})),
+		tool("brw_approval_status", "Check an approval request status without exposing its contents. After approved, retry the exact original tool arguments with approval_id. Never retry a consumed action with an uncertain outcome. This tool cannot approve or reject requests.", object(map[string]any{"approval_id": stringSchema("Request ID returned by approval_required.")}, []string{"approval_id"})),
 		tool("brw_watch_page", "Register a persistent read-only page watcher on the browser-host daemon. It opens a private background tab and survives MCP client exit and daemon restart. First successful sample sets a baseline; subsequent changes and unavailable/recovered transitions produce durable metadata-only events. Collect them with brw_page_events, then open your own tab to inspect activity. Exact URL including path, query and fragment is pinned; redirected login pages are refused. Stable id makes identical retries idempotent. Optional refresh_interval_ms refreshes only the private tab for static pages. Browser sampling can miss activity between samples; no model polling is needed.", object(map[string]any{
 			"id":                  stringSchema("Optional stable id: 1..96 letters, digits, underscores or hyphens."),
 			"url":                 stringSchema("Exact http(s) page URL without embedded credentials."),

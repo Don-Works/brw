@@ -24,6 +24,7 @@ type versionSkew struct {
 	mu        sync.Mutex
 	checkedAt time.Time
 	note      string
+	daemon    string
 }
 
 // versionSkewNote is a one-line warning when this proxy and its daemon run
@@ -43,12 +44,36 @@ func (s *Server) versionSkewNote(ctx context.Context) string {
 	daemon, err := upstream.UpstreamVersion(checkCtx)
 	s.skew.checkedAt = time.Now()
 	s.skew.note = ""
+	s.skew.daemon = ""
+	if err == nil {
+		s.skew.daemon = daemon
+	}
 	if err == nil && daemon != "" && daemon != Version {
 		s.skew.note = fmt.Sprintf("brw version skew: this session's brw MCP proxy is %s but the daemon is %s. "+
-			"The proxy builds page scripts (WebMCP, reads, snapshots), so fixes in %s do not apply here until "+
-			"this brw connection restarts: reconnect it (/mcp in Claude Code) or start a new session.", Version, daemon, daemon)
+			"The proxy builds page scripts and the daemon controls the browser. Align both with the same reviewed build, "+
+			"restart the affected daemon after its active sessions finish, and reconnect this MCP connection.", Version, daemon)
 	}
 	return s.skew.note
+}
+
+func (s *Server) identityVersions(ctx context.Context, payload map[string]any) {
+	if _, ok := s.manager.(upstreamVersioner); !ok {
+		return
+	}
+	s.versionSkewNote(ctx)
+	s.skew.mu.Lock()
+	daemon := s.skew.daemon
+	s.skew.mu.Unlock()
+	payload["proxy_version"] = Version
+	payload["daemon_version"] = daemon
+	alignment := "unknown"
+	if daemon != "" {
+		alignment = "mismatch"
+		if daemon == Version {
+			alignment = "matched"
+		}
+	}
+	payload["version_alignment"] = alignment
 }
 
 // withSkewNote appends note to a tool result's content, leaving structured

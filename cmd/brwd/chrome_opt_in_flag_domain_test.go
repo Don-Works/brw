@@ -21,6 +21,10 @@ import (
 // what it listens on, what it records, what it lets an agent do once the
 // browser is reached — and none of them reaches the browser.
 var notAboutWhichBrowser = map[string]string{
+	"approvals":                   "daemon's operator approval policy",
+	"approval-token-file":         "daemon's operator credential",
+	"approval-store":              "daemon's private approval request store",
+	"approval-mode":               "daemon's operator approval policy",
 	"http":                        "daemon's own HTTP listen address",
 	"http-token-file":             "credential callers present to this daemon's HTTP listener",
 	"upstream-token-file":         "credential sent to an --upstream-http daemon, which this lane refuses",

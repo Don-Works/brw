@@ -17,7 +17,8 @@ var (
 // routesNotRecorded are the /api/ paths that deliberately have no usage
 // operation, each with the reason it is not one.
 var routesNotRecorded = map[string]string{
-	"/api/usage/report": "metadata ingestion excluded to prevent recursive accounting",
+	"/api/approvals/{id}": "approval lifecycle metadata, not browser execution",
+	"/api/usage/report":   "metadata ingestion excluded to prevent recursive accounting",
 	// A long-lived SSE control-plane stream, not a tool call: one event per
 	// session rather than per operation, and its duration is the session's.
 	"/api/session/stream": "server-sent event stream, not an operation",

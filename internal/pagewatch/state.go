@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 
@@ -21,10 +22,7 @@ func DefaultRoot(identity brwidentity.Identity) (string, error) {
 }
 
 func (s *Service) store(id string, r *record) error {
-	state := diskState{Version: 1, Watchers: make(map[string]record, len(s.records)+1)}
-	for key, value := range s.records {
-		state.Watchers[key] = value
-	}
+	state := diskState{Version: 1, Watchers: maps.Clone(s.records)}
 	if r == nil {
 		delete(state.Watchers, id)
 	} else {

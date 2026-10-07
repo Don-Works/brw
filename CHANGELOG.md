@@ -14,6 +14,14 @@
   message bodies are never included in the watcher queue.
 - Close proven owned tabs on graceful shutdown, discard unproven tab IDs after
   restart/reconnection, and honor explicit tab targeting in readiness waits.
+- Add bearer-token auth for a browser host on a private network.
+  `--http-token-file` makes every HTTP request, watcher routes and `/health`
+  included, carry `Authorization: Bearer <token>`; `--upstream-token-file` or
+  `BRW_UPSTREAM_TOKEN` makes an `--upstream-http` proxy send it to the upstream
+  host only. A non-loopback `--http` without a token starts with a warning.
+- `--timeout 0`, or a profile's `"operation_timeout": "0"`, removes the fixed
+  per-operation limit (#51).
+- A plan's HTTP request timeout now covers the sum of its steps' waits (#50).
 
 ## 0.20.1 - 2026-10-02
 
