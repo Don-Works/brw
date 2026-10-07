@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -12,8 +13,82 @@ import (
 	"time"
 
 	brwcdp "github.com/Don-Works/brw/internal/cdp"
+	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
+
+func TestCancelledFrameAttachmentDoesNotStartBrowserWork(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	frame, release, err := attachFrameTarget(ctx, target.ID("not-attached"))
+	if !errors.Is(err, context.Canceled) || frame != nil || release != nil {
+		t.Fatalf("cancelled attachment = %v, %v, %v", frame, release != nil, err)
+	}
+}
+
+func TestFrameRuntimeGateChecksDocumentRollover(t *testing.T) {
+	private := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(innerFrameDoc))
+	}))
+	defer private.Close()
+	privateURL := strings.Replace(private.URL, "127.0.0.1", "localhost", 1)
+	denied := errors.New("private child document refused")
+	for _, name := range []string{"snapshot", "action"} {
+		t.Run(name, func(t *testing.T) {
+			ctx, _ := crossOriginFixture(t, innerFrameDoc)
+			frames := frameSnapshotFor(t, ctx)
+			var ref string
+			for _, el := range frames[0].Snapshot.Elements {
+				if el.Name == "Frame Go" {
+					ref = fmt.Sprintf("f%d:%s", frames[0].Index, el.Ref)
+				}
+			}
+			if ref == "" {
+				t.Fatal("public fixture button missing")
+			}
+			rolled := false
+			check := func(origin string) error {
+				if origin == privateURL {
+					return denied
+				}
+				if !rolled {
+					rolled = true
+					raw, _ := json.Marshal(privateURL)
+					if err := chromedp.Run(ctx, chromedp.Evaluate(`document.querySelector('iframe').src=`+string(raw), nil)); err != nil {
+						return err
+					}
+					deadline := time.Now().Add(5 * time.Second)
+					for {
+						handles, err := frameHandles(ctx)
+						if err != nil {
+							return err
+						}
+						if len(handles) == 1 && strings.HasPrefix(handles[0].liveURL, privateURL) {
+							break
+						}
+						if time.Now().After(deadline) {
+							return errors.New("child navigation did not commit")
+						}
+						time.Sleep(10 * time.Millisecond)
+					}
+				}
+				return nil
+			}
+			if name == "snapshot" {
+				out, err := SnapshotOutOfProcessFrames(ctx, SnapshotOptions{Mode: "all"}, check)
+				if err != nil || len(out) != 0 || !rolled {
+					t.Fatalf("private frame snapshot=%v err=%v rolled=%t", out, err, rolled)
+				}
+			} else {
+				out, err := ResolveCrossOriginActionPoint(ctx, ref, 1000, check)
+				if !errors.Is(err, denied) || out != (ElementBox{}) || !rolled {
+					t.Fatalf("private frame action=%v err=%v rolled=%t", out, err, rolled)
+				}
+			}
+		})
+	}
+}
 
 // The fixture is two ORIGINS on two SITES. httptest binds 127.0.0.1, and Chrome's
 // site isolation keys on the site (scheme + registrable host), not the port — so
@@ -190,6 +265,33 @@ func TestForgedFrameStampRefusesToBindAFrameRef(t *testing.T) {
 	// And the ref paths refuse with it rather than acting on the wrong frame.
 	if _, err := ResolveCrossOriginActionPoint(ctx, "f0:e1", 0, nil); err == nil {
 		t.Fatal("a ref resolved against a page whose frame stamps are ambiguous")
+	}
+}
+
+func TestNegativeFrameStampCannotIndexTheMetadataBoxes(t *testing.T) {
+	ctx, _ := crossOriginFixture(t, innerFrameDoc)
+	if handles, err := frameHandles(ctx); err != nil || len(handles) != 1 {
+		t.Fatalf("valid frame control = %v (%d handles)", err, len(handles))
+	}
+	if err := chromedp.Run(ctx, chromedp.Evaluate(`(function(){
+      const frame=document.getElementById('embed');
+      frame.setAttribute('data-brw-xframe','-1');
+      const original=frame.getAttribute;
+      frame.getAttribute=function(name){ return name==='data-brw-xframe'?'0':original.call(this,name); };
+    })()`, nil)); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("page-writable negative frame stamp panicked: %v", recovered)
+		}
+	}()
+	handles, err := frameHandles(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(handles) != 0 {
+		t.Fatalf("invalid frame stamp still bound %d targets", len(handles))
 	}
 }
 

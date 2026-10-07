@@ -49,7 +49,10 @@ func TestRuntimeDestinationGateProtectsOutputsWithoutNavigationPolicy(t *testing
 		"structured read": func(ctx context.Context) (any, error) { return m.ReadData(ctx) },
 		"observe":         func(ctx context.Context) (any, error) { return m.Observe(ctx) },
 		"evaluate":        func(ctx context.Context) (any, error) { return m.Evaluate(ctx, "document.title") },
-		"screenshot":      func(ctx context.Context) (any, error) { return m.Screenshot(ctx) },
+		"throwing evaluate": func(ctx context.Context) (any, error) {
+			return m.Evaluate(ctx, `(()=>{throw new Error(document.body.innerText)})()`)
+		},
+		"screenshot": func(ctx context.Context) (any, error) { return m.Screenshot(ctx) },
 		"annotated screenshot": func(ctx context.Context) (any, error) {
 			return m.ScreenshotAnnotated(ctx, AnnotatedScreenshotOptions{})
 		},
@@ -214,7 +217,7 @@ func TestScreencastRuntimeGatePausesUntilNewDocumentIsAuthorized(t *testing.T) {
 	}
 }
 
-func TestReadRuntimeDestinationGateChecksDocumentRollover(t *testing.T) {
+func TestRuntimeDestinationGateChecksDocumentRollover(t *testing.T) {
 	private := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte(`<html><title>Private document</title><body><article><h1>Private document</h1><p>Private document content must not reach a read response after the preliminary snapshot.</p></article></body></html>`))
@@ -228,31 +231,43 @@ func TestReadRuntimeDestinationGateChecksDocumentRollover(t *testing.T) {
 	m := newHeadlessManager(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
-	opened, err := m.Open(ctx, public.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tabCtx, err := m.tabContext(opened.Tab.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	denied := errors.New("fixture private document refused")
-	rolled := false
-	ctx = WithFrameReadCheck(WithTabID(ctx, opened.Tab.ID), func(raw string) error {
-		if strings.HasPrefix(raw, private.URL) {
-			return denied
-		}
-		if !rolled {
-			rolled = true
-			if err := chromedp.Run(tabCtx, chromedp.Navigate(private.URL)); err != nil {
-				return err
+	for _, name := range []string{"read", "snapshot AX", "snapshot frames"} {
+		t.Run(name, func(t *testing.T) {
+			opened, err := m.Open(ctx, public.URL)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-		return nil
-	})
-	out, err := m.Read(ctx)
-	if !rolled || !errors.Is(err, denied) || !reflect.ValueOf(out).IsZero() {
-		t.Fatalf("read after rollover returned a %T result, err=%v, rolled=%t", out, err, rolled)
+			tabCtx, err := m.tabContext(opened.Tab.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			denied := errors.New("fixture private document refused")
+			rolled := false
+			guarded := WithFrameReadCheck(WithTabID(ctx, opened.Tab.ID), func(raw string) error {
+				if strings.HasPrefix(raw, private.URL) {
+					return denied
+				}
+				if !rolled {
+					rolled = true
+					if err := chromedp.Run(tabCtx, chromedp.Navigate(private.URL)); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+			var out any
+			switch name {
+			case "read":
+				out, err = m.Read(guarded)
+			case "snapshot AX":
+				out, err = m.Snapshot(guarded, snapshot.SnapshotOptions{IncludeAX: true})
+			case "snapshot frames":
+				out, err = m.Snapshot(guarded, snapshot.SnapshotOptions{IncludeFrames: true})
+			}
+			if !rolled || !errors.Is(err, denied) || !reflect.ValueOf(out).IsZero() {
+				t.Fatalf("read after rollover returned a %T result, err=%v, rolled=%t", out, err, rolled)
+			}
+		})
 	}
 }
 
@@ -287,6 +302,43 @@ func TestOpenRuntimeDestinationGateChecksRedirectWithoutNavigationPolicy(t *test
 	for _, tab := range tabs {
 		if strings.HasPrefix(tab.URL, private.URL) {
 			t.Fatalf("refused redirected tab remains open: %+v", tab)
+		}
+	}
+}
+
+func TestReplayRuntimeGateChecksActualRedirectDestination(t *testing.T) {
+	private := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		_, _ = w.Write([]byte("private replay fixture body"))
+	}))
+	defer private.Close()
+	public := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, private.URL+"/payload", http.StatusFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><title>Public replay fixture</title><body>Public replay fixture.</body></html>`))
+	}))
+	defer public.Close()
+	m := newHeadlessManager(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	opened, err := m.Open(ctx, public.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied := errors.New("fixture redirected fetch refused")
+	ctx = WithFetchCheck(WithTabID(ctx, opened.Tab.ID), func(raw string) error {
+		if strings.HasPrefix(raw, private.URL) {
+			return denied
+		}
+		return nil
+	})
+	for _, raw := range []string{"/redirect", public.URL + "/redirect"} {
+		out, err := m.ReplayRequest(ctx, ReplayRequestParams{URL: raw})
+		if !errors.Is(err, denied) || !reflect.ValueOf(out).IsZero() {
+			t.Fatalf("redirect replay exposed a %T result, err=%v, request=%q", out, err, raw)
 		}
 	}
 }

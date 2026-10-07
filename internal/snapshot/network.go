@@ -528,6 +528,8 @@ const ReplayRequestScript = `(function(opts) {
     };
   }
   var url = String(opts.url || '');
+  var requestedURL = url;
+  try { requestedURL = new URL(url, location.href).href; } catch (_) {}
   var init = { method: String(opts.method || 'GET').toUpperCase() };
   if (opts.headers && typeof opts.headers === 'object') init.headers = opts.headers;
   if (typeof opts.body === 'string' && opts.body.length && init.method !== 'GET' && init.method !== 'HEAD') init.body = opts.body;
@@ -536,16 +538,16 @@ const ReplayRequestScript = `(function(opts) {
       var result = bodyWindow(t);
       result.status = resp.status;
       result.ok = resp.ok;
-      result.url = url;
+      result.url = resp.url || requestedURL;
       result.method = init.method;
       result.content_type = resp.headers.get('content-type') || '';
       result.error = '';
       return result;
     }).catch(function() {
-      return { status: resp.status, ok: resp.ok, body: '', body_bytes: 0, body_total_bytes: 0, url: url, method: init.method, content_type: resp.headers.get('content-type') || '', error: '' };
+      return { status: resp.status, ok: resp.ok, body: '', body_bytes: 0, body_total_bytes: 0, url: resp.url || requestedURL, method: init.method, content_type: resp.headers.get('content-type') || '', error: '' };
     });
   }).catch(function(err) {
-    return { status: 0, ok: false, body: '', url: url, method: init.method, error: String(err && err.message || err) };
+    return { status: 0, ok: false, body: '', url: requestedURL, method: init.method, error: String(err && err.message || err) };
   });
 })`
 

@@ -310,6 +310,11 @@ func fetchUploadTemp(ctx context.Context, rawURL, filename string) (string, erro
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return "", fmt.Errorf("url scheme %q not supported (use http or https)", u.Scheme)
 	}
+	if check := FetchCheckFromContext(ctx); check != nil {
+		if err := check(u.String()); err != nil {
+			return "", err
+		}
+	}
 	if filename == "" {
 		if base := filepath.Base(u.Path); base != "" && base != "." && base != "/" {
 			filename = base

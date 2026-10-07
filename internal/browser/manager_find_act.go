@@ -42,7 +42,7 @@ func (m *Manager) tabFinder(tabID string) FindActFinder {
 		m.ensureWebMCP(tabID, ctx)
 		result, err := snapshot.Find(ctx, opts)
 		if err != nil {
-			return snapshot.FindResult{}, err
+			return snapshot.FindResult{}, m.guardPageError(tabID, ctx, err)
 		}
 		if err := m.enforceFinalURL(tabID, ctx, result.URL); err != nil {
 			return snapshot.FindResult{}, err
