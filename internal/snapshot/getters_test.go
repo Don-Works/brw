@@ -3,9 +3,11 @@ package snapshot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/chromedp/cdproto/runtime"
@@ -15,8 +17,15 @@ import (
 const getterFixture = `<!doctype html><html><head><title>Getter fixture</title></head><body>
 <h1 id="heading">Hello</h1>
 <input id="name" value="Ada" data-kind="person">
+<input id="empty" value="">
 <input id="agree" type="checkbox" checked>
 <input id="frozen" value="fixed" readonly>
+<input id="password" type="password" value="fixture-password-value" aria-label="Password">
+<input id="hidden" type="hidden" value="fixture-hidden-value">
+<input id="otp" autocomplete="one-time-code" value="fixture-otp-value">
+<input id="card" autocomplete="section-billing cc-number" value="fixture-card-value">
+<textarea id="password-text" autocomplete="current-password">fixture-textarea-password</textarea>
+<select id="card-select" autocomplete="cc-type"><option value="fixture-card-select" selected>Fixture card</option></select>
 <div id="editor" contenteditable="true">notes</div>
 <button id="go" disabled>Go</button>
 <p class="row">one</p><p class="row">two</p><p class="row">three</p>
@@ -48,15 +57,26 @@ func evalJSON(t *testing.T, ctx context.Context, expr string) map[string]any {
 
 func TestGetScript(t *testing.T) {
 	tests := []struct {
-		name   string
-		what   string
-		target string
-		attr   string
-		want   any
+		name      string
+		what      string
+		target    string
+		attr      string
+		want      any
+		sensitive bool
 	}{
 		{name: "title", what: "title", want: "Getter fixture"},
 		{name: "element text", what: "text", target: "#heading", want: "Hello"},
 		{name: "input value", what: "value", target: "#name", want: "Ada"},
+		{name: "ordinary empty value remains exact", what: "value", target: "#empty", want: ""},
+		{name: "password value withheld", what: "value", target: "#password", want: "", sensitive: true},
+		{name: "hidden value withheld", what: "value", target: "#hidden", want: "", sensitive: true},
+		{name: "one-time code withheld", what: "value", target: "#otp", want: "", sensitive: true},
+		{name: "payment number withheld", what: "value", target: "#card", want: "", sensitive: true},
+		{name: "password attribute withheld", what: "attr", target: "#password", attr: "VALUE", want: "", sensitive: true},
+		{name: "password textarea text withheld", what: "text", target: "#password-text", want: "", sensitive: true},
+		{name: "password textarea value withheld", what: "value", target: "#password-text", want: "", sensitive: true},
+		{name: "payment select value withheld", what: "value", target: "#card-select", want: "", sensitive: true},
+		{name: "sensitive field accessible label remains visible", what: "attr", target: "#password", attr: "aria-label", want: "Password"},
 		{name: "attribute", what: "attr", target: "#name", attr: "data-kind", want: "person"},
 		{name: "count matches every element", what: "count", target: ".row", want: float64(3)},
 		{name: "visible element", what: "visible", target: "#heading", want: true},
@@ -95,7 +115,31 @@ func TestGetScript(t *testing.T) {
 			if got["value"] != tt.want {
 				t.Fatalf("get %s(%s) = %#v, want %#v", tt.what, tt.target, got["value"], tt.want)
 			}
+			if sensitive, _ := got["sensitive"].(bool); sensitive != tt.sensitive {
+				t.Fatalf("get %s(%s) sensitive=%t, want %t", tt.what, tt.target, sensitive, tt.sensitive)
+			}
 		})
+	}
+}
+
+func TestSensitiveValueAssertionsOnlyReturnTheComparison(t *testing.T) {
+	ctx, cancel := newHeadlessSettleCtx(t)
+	defer cancel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, getterFixture)
+	}))
+	defer server.Close()
+	if err := chromedp.Run(ctx, chromedp.Navigate(server.URL), chromedp.Evaluate(`document.getElementById('password').setAttribute('data-brw-ref','sensitive-fixture')`, nil)); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct{ script, expected string }{{AssertValueScript, "fixture-password-value"}, {AssertValueContainsScript, "password-value"}} {
+		if err := EvalAssert(ctx, check.script, "sensitive-fixture", check.expected, int64(1)); err != nil {
+			t.Fatalf("private-value comparison failed: %v", err)
+		}
+		if err := EvalAssert(ctx, check.script, "sensitive-fixture", "wrong-fixture-value", int64(1)); !errors.Is(err, ErrAssertionTimeout) || strings.Contains(err.Error(), "fixture-password-value") {
+			t.Fatalf("failed comparison disclosed an actual value or lost timeout semantics: %v", err)
+		}
 	}
 }
 

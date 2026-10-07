@@ -124,13 +124,19 @@ const GetScript = `(function(what, target, name){` + FrameWalkHelpers + `
     }
     case 'text':
       if(!target) return {value: document.body ? document.body.innerText : ''};
-      return {value: need().innerText};
+      var textElement = need();
+      return __abSensitive(textElement) ? {value:'',sensitive:true} : {value:textElement.innerText};
     case 'value': {
       var el = need();
+      if (__abSensitive(el)) return {value:'',sensitive:true};
       if(el.type === 'checkbox' || el.type === 'radio') return {value: el.checked ? 'on' : ''};
       return {value: el.value === undefined ? '' : String(el.value)};
     }
-    case 'attr':  return {value: need().getAttribute(name)};
+    case 'attr': {
+      var attributeElement = need();
+      if(name.toLowerCase() === 'value' && __abSensitive(attributeElement)) return {value:'',sensitive:true};
+      return {value:attributeElement.getAttribute(name)};
+    }
     case 'count': return {value: all(target).length};
     case 'box': {
       var rect = need().getBoundingClientRect();
