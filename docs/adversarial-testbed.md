@@ -74,6 +74,17 @@ applied cursor and observed browser DOM establish whether delivery succeeded.
 `reading` contains scoring facts and required phrases. `visual_targets`
 contains image-relative bounds, shape, color, printed ID, and the correct
 target. Stable accessible names and test IDs live in the embedded page.
+`Hover fixture target` records `hover`/`hover-exit` counts; the named editable
+controls record `focus` counts and the latest tracked `focus_name`. Both child
+frames provide `Child fixture note`, whose value appears as `form_state.child_note`.
+Frame-version checks reject effects from a replaced child document.
+
+When the browser provides native WebMCP or brw's explicitly enabled runtime,
+the page registers `fixture_read_report` (read-only verified facts) and
+`fixture_delete_account` (destructive, approval-gated synthetic mutation).
+If the runtime is enabled after load, use `Register available page tools`.
+The mutation increments `action_counts.webmcp-mutation`; the companion must
+prove a refused call leaves that counter unchanged before approving a write.
 
 `measurements` counts successfully produced JSON/static response body bytes,
 Unicode characters, and the ceiling of characters divided by four. The stream

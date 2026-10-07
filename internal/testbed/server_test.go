@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os/exec"
 	"reflect"
 	"strconv"
 	"strings"
@@ -151,6 +152,38 @@ func TestResetStaleRunAndDocument(t *testing.T) {
 	call(t, s, "/api/ack", acknowledgement{RunID: initial.RunID}, 409)
 	if state(t, s).Cursor != 0 {
 		t.Fatal("old run request changed new run")
+	}
+}
+
+func TestTrackedInteractionsAndChildFrameEpoch(t *testing.T) {
+	s := start(t, 17, 12)
+	initial := state(t, s)
+	for _, body := range []map[string]any{
+		{"run_id": initial.RunID, "document_epoch": 1, "kind": "hover", "target": "Hover fixture target"},
+		{"run_id": initial.RunID, "document_epoch": 1, "kind": "focus", "target": "Fixture note"},
+		{"run_id": initial.RunID, "document_epoch": 1, "frame_version": 1, "kind": "input-child", "note": "owned child note"},
+	} {
+		call(t, s, "/api/action", body, 200)
+	}
+	oracle := state(t, s)
+	if oracle.ActionCounts["hover"] != 1 || oracle.ActionCounts["focus"] != 1 || oracle.FocusName != "Fixture note" || oracle.FormState.ChildNote != "owned child note" {
+		t.Fatalf("interaction oracle: %+v", oracle)
+	}
+	step(t, s, initial.RunID, "frame", 1)
+	call(t, s, "/api/action", map[string]any{"run_id": initial.RunID, "document_epoch": 1, "frame_version": 1, "kind": "input-child", "note": "stale child note"}, 409)
+	if state(t, s).FormState.ChildNote != "owned child note" {
+		t.Fatal("stale frame changed child note")
+	}
+}
+
+func TestEmbeddedPageToolsAndInteractionBindings(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node unavailable")
+	}
+	s := start(t, 17, 12)
+	if output, err := exec.Command(node, "app_test.mjs", s.URL()).CombinedOutput(); err != nil {
+		t.Fatalf("actual embedded page bindings: %v: %s", err, output)
 	}
 }
 
