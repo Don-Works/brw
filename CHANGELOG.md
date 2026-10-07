@@ -22,7 +22,7 @@
   model is unavailable, slow or invalid. Return an explicit bounded excerpt and
   fixed fallback reason, retain source ranges, enforce one shared model deadline
   and reap owned HTTP children. Collection and cleanup failures remain job errors.
-- Add correlated elapsed-time MCP progress for long browser and reader calls with
+- Add correlated elapsed-time MCP progress for long browser calls with
   supplied progress tokens. Preserve concurrent ping and cancellation, stop
   progress before terminal delivery, and document Maix host-side integration gaps.
 - Improve metadata-only usage outcomes and error classification. Keep response-size

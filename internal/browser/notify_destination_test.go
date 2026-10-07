@@ -23,7 +23,7 @@ func TestNotifyChecksDestinationBeforeEffectsAndBeforeReturning(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cancelTab()
-	if err := chromedp.Run(tabCtx, chromedp.Evaluate(`window.fixtureNotificationAccesses=0; Object.defineProperty(window,'Notification',{configurable:true,get(){window.fixtureNotificationAccesses++;return undefined;}})`, nil)); err != nil {
+	if err := chromedp.Run(tabCtx, chromedp.Evaluate(`(()=>{window.fixtureNotificationAccesses=0; Object.defineProperty(window,'Notification',{configurable:true,get(){window.fixtureNotificationAccesses++;return undefined;}});return true;})()`, nil)); err != nil {
 		t.Fatal(err)
 	}
 	denied := errors.New("owned notification destination refused")

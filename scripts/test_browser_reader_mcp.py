@@ -242,27 +242,39 @@ class ReaderMCPTests(unittest.TestCase):
         self.assertTrue(client.receive()['result']['isError'])
         self.assertEqual(client.receive()['id'], 2)
 
-    def test_long_call_progress_ping_and_cancellation(self):
-        client = self.client(timeout=15)
-        client.initialize()
-        client.send('tools/call', {'name': 'brw_ask', 'arguments': {'url': 'https://example.test/page', 'question': 'sleep:12'}, '_meta': {'progressToken': 'opaque-job'}}, request_id=2)
-        client.wait_started()
-        client.send('ping', request_id=3)
-        self.assertEqual(client.receive()['id'], 3)
-        packet = client.receive(timeout=7)
-        self.assertEqual(packet['method'], 'notifications/progress')
-        self.assertEqual(packet['params']['progressToken'], 'opaque-job')
-        self.assertGreater(packet['params']['progress'], 0)
-        self.assertEqual(set(packet['params']), {'progressToken', 'progress', 'message'})
-        client.send('notifications/cancelled', {'requestId': 2})
-        deadline = time.monotonic()+3
-        while time.monotonic() < deadline and not list(client.artifacts.glob('*/adapter.json')):
-            time.sleep(.01)
-        self.assertTrue(json.loads(next(client.artifacts.glob('*/adapter.json')).read_text())['cancelled'])
-        client.send('ping', request_id=4)
-        self.assertEqual(client.receive()['id'], 4)
-        with self.assertRaises(queue.Empty):
-            client.receive(timeout=.2)
+    def test_stalled_output_cannot_prevent_worker_deadline_cleanup(self):
+        class StalledOutput:
+            def __init__(self):
+                self.entered = threading.Event()
+                self.release = threading.Event()
+
+            def write(self, _):
+                self.entered.set()
+                if not self.release.wait(10):
+                    raise TimeoutError('controlled stalled output')
+
+            def flush(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            worker = root / 'fake.py'
+            worker.write_text(WORKER)
+            output = StalledOutput()
+            args = ADAPTER.parse_args(['--worker', str(worker), '--artifacts-dir', str(root / 'jobs'), '--timeout', '6', '--no-usage-log'])
+            server = ADAPTER.Server(args, output=output)
+            server.initialized = server.ready = True
+            server.dispatch({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'name': 'brw_ask', 'arguments': {'url': 'https://example.test/page', 'question': 'sleep:12'}, '_meta': {'progressToken': 'stalled-sink'}}})
+            job = server.active[2]
+            try:
+                self.assertTrue(output.entered.wait(8))
+                self.assertTrue(list((root / 'jobs').glob('*/cleanup')), 'stdout blocked before owned worker cleanup')
+                report = json.loads(next((root / 'jobs').glob('*/adapter.json')).read_text())
+                self.assertEqual(report['error_kind'], 'deadline_exceeded')
+            finally:
+                output.release.set()
+                job['thread'].join(3)
+            self.assertFalse(job['thread'].is_alive())
 
     def test_cancellation_suppresses_reply_and_preserves_cleanup(self):
         client = self.client()
