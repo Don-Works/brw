@@ -20,6 +20,9 @@ const dialogsUnsupportedNote = "Dialog control is unavailable: the connected brw
 func (b *Bridge) Dialog(ctx context.Context, opts browser.DialogOptions) (browser.DialogResult, error) {
 	tabID := strings.TrimSpace(opts.TabID)
 	if tabID == "" {
+		tabID = browser.TabIDFromContext(ctx)
+	}
+	if tabID == "" && (!b.navPolicy.Empty() || browser.FrameReadCheckFromContext(ctx) != nil) {
 		tabID = b.contextTabID(ctx)
 	}
 	if tabID != "" {

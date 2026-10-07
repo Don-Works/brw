@@ -138,6 +138,22 @@ func (b *Bridge) callCrossOriginFrames(ctx context.Context, origins []string, ex
 			return nil, fmt.Errorf("parse cross-origin frames: %w", jsonErr)
 		}
 	}
+	if check := browser.FrameReadCheckFromContext(ctx); check != nil {
+		for i := range payload.Frames {
+			frame := &payload.Frames[i]
+			if frame.Snapshot == nil && len(frame.Elements) == 0 {
+				continue
+			}
+			rawURL := frame.URL
+			if frame.Snapshot != nil {
+				rawURL = frame.Snapshot.URL
+			}
+			if rawURL == "" || check(rawURL) != nil {
+				frame.Snapshot = nil
+				frame.Elements = nil
+			}
+		}
+	}
 	pageTransportNoteFrom(ctx).noteSkipped(payload.SkippedExtensionFrames)
 	return payload.Frames, nil
 }

@@ -146,3 +146,27 @@ func TestBridgeReplayProtectedRedirectDoesNotReturnBody(t *testing.T) {
 		t.Fatalf("redirected response bypassed: result=%+v err=%v", result, err)
 	}
 }
+
+func TestBridgeFrameReadRejectsReturnedProtectedOrUnknownDocument(t *testing.T) {
+	const protected = "http://127.0.0.1:9223/approvals"
+	b := New("", time.Second, "")
+	stub := &cdpStub{reply: func(cdpCall, int) (map[string]any, string) {
+		return map[string]any{"frames": []any{
+			map[string]any{"origin": "https://public.test", "url": "https://public.test/", "snapshot": map[string]any{"url": protected, "title": "private"}},
+			map[string]any{"origin": "https://public.test", "url": "https://public.test/", "snapshot": map[string]any{"title": "unknown private"}},
+			map[string]any{"origin": "https://public.test", "url": "https://public.test/", "snapshot": map[string]any{"url": "https://public.test/", "title": "allowed"}},
+		}}, ""
+	}}
+	cleanup := serveCDPStub(t, b, stub)
+	defer cleanup()
+	ctx := browser.WithFrameReadCheck(browser.WithTabID(context.Background(), "42"), func(raw string) error {
+		if raw == protected {
+			return errors.New("refused")
+		}
+		return nil
+	})
+	frames, err := b.callCrossOriginFrames(ctx, []string{"https://public.test"}, "fixture()")
+	if err != nil || len(frames) != 3 || frames[0].Snapshot != nil || frames[1].Snapshot != nil || frames[2].Snapshot == nil || frames[2].Snapshot.Title != "allowed" {
+		t.Fatalf("returned frame origin bypassed: %+v %v", frames, err)
+	}
+}
