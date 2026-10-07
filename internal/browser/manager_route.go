@@ -278,16 +278,18 @@ func (m *Manager) Route(ctx context.Context, opts RouteOptions) (RouteResult, er
 	if err := CheckRouteBehaviourSupported(opts.Behaviour); err != nil {
 		return RouteResult{}, err
 	}
-	tabID := strings.TrimSpace(opts.TabID)
-	if tabID == "" {
-		active, err := m.ensureActive(ctx)
-		if err != nil {
-			return RouteResult{}, err
-		}
-		tabID = active
+	tabID, _, cancel, err := m.contextForTab(ctx, strings.TrimSpace(opts.TabID))
+	if err != nil {
+		return RouteResult{}, err
 	}
+	cancel()
 	tabCtx, err := m.tabContext(tabID)
 	if err != nil {
+		return RouteResult{}, err
+	}
+	guardCtx, guardCancel := context.WithTimeout(carryConsentHooks(ctx, tabCtx), m.timeout)
+	defer guardCancel()
+	if err := m.guardCurrentURL(tabID, guardCtx); err != nil {
 		return RouteResult{}, err
 	}
 

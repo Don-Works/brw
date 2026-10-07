@@ -84,6 +84,9 @@ func (m *Manager) NetworkCapture(ctx context.Context, filter string) ([]snapshot
 		return nil, err
 	}
 	defer cancel()
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
+		return nil, err
+	}
 	// Arm the interceptor to re-install on every future document for this tab so
 	// capture survives full navigations/reloads (direct-CDP transport). Done once
 	// per tab; best-effort — a failure here must not break same-page capture.
@@ -104,6 +107,9 @@ func (m *Manager) NetworkCapture(ctx context.Context, filter string) ([]snapshot
 	if err != nil {
 		return nil, err
 	}
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
+		return nil, err
+	}
 	return filterCapturedRequests(requests, filter), nil
 }
 
@@ -112,10 +118,22 @@ func (m *Manager) ReplayRequest(ctx context.Context, params ReplayRequestParams)
 	if reason := params.BlockedReplayReason(); reason != "" {
 		return snapshot.ReplayResult{}, errors.New(reason)
 	}
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return snapshot.ReplayResult{}, err
 	}
 	defer cancel()
-	return snapshot.ReplayRequest(tabCtx, params.Method, params.URL, params.Headers, params.Body, params.Offset, params.MaxBytes)
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
+		return snapshot.ReplayResult{}, err
+	}
+	result, err := snapshot.ReplayRequest(tabCtx, params.Method, params.URL, params.Headers, params.Body, params.Offset, params.MaxBytes)
+	if err != nil {
+		return snapshot.ReplayResult{}, err
+	}
+	if check := FetchCheckFromContext(tabCtx); check != nil {
+		if err := check(result.URL); err != nil {
+			return snapshot.ReplayResult{}, err
+		}
+	}
+	return result, nil
 }

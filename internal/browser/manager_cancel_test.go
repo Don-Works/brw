@@ -3,7 +3,6 @@ package browser
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 	"time"
 )
@@ -208,45 +207,57 @@ func TestRunPlanStepsCancelMidStepReportsCancelled(t *testing.T) {
 	}
 }
 
-// TestWaitForLoopHonorsContextCancel verifies the wait-loop cancellation: a
-// WaitFor whose context is cancelled returns promptly with a cancelled error
-// instead of running out the full timeout. We drive the loop logic directly via
-// a tight re-creation of the cancel check the production WaitFor uses.
-func TestWaitForLoopHonorsContextCancel(t *testing.T) {
-	reg := newCancelRegistry()
-	entry, release := reg.register(context.Background(), "tab-1")
-	defer release()
-
-	// Cancel almost immediately, as a concurrent brw_cancel would.
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		time.Sleep(20 * time.Millisecond)
-		reg.cancel("tab-1")
-	}()
-
-	start := time.Now()
-	// Mirror the production WaitFor loop's cancellation guard against a long
-	// deadline: it must bail out as soon as the context is cancelled.
-	deadline := time.Now().Add(5 * time.Second)
-	var bailed bool
-	for {
-		if entry.ctx.Err() != nil {
-			bailed = true
-			break
+func TestManagerBrowserOperationsRespectCallerCancellation(t *testing.T) {
+	m := newHeadlessManager(t)
+	t.Run("cancelled request cannot create a tab", func(t *testing.T) {
+		before, err := m.ListTabs(context.Background())
+		if err != nil {
+			t.Fatal(err)
 		}
-		if time.Now().After(deadline) {
-			break
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := m.Open(ctx, "about:blank"); !errors.Is(err, context.Canceled) {
+			t.Errorf("Open on cancelled request = %v, want context.Canceled", err)
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	wg.Wait()
-
-	if !bailed {
-		t.Fatal("wait loop should bail out on context cancel")
-	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("wait loop took too long to honor cancel: %v", elapsed)
-	}
+		after, err := m.ListTabs(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(after) != len(before) {
+			t.Errorf("cancelled Open created a tab: before=%d after=%d", len(before), len(after))
+		}
+	})
+	t.Run("running browser operation stops with its caller", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		started := make(chan struct{})
+		abort := make(chan struct{})
+		defer close(abort)
+		done := make(chan error, 1)
+		go func() {
+			done <- m.runBrowser(ctx, func(runCtx context.Context) error {
+				close(started)
+				select {
+				case <-runCtx.Done():
+					return runCtx.Err()
+				case <-abort:
+					return errors.New("test backstop")
+				}
+			})
+		}()
+		select {
+		case <-started:
+		case <-time.After(3 * time.Second):
+			t.Fatal("operation never started")
+		}
+		cancel()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("operation returned %v, want context.Canceled", err)
+			}
+		case <-time.After(time.Second):
+			t.Error("browser operation ignored caller cancellation")
+		}
+	})
 }

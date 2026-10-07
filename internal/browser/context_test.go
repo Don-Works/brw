@@ -2,7 +2,9 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 )
 
 func TestTabPinKindsPreserveOwnershipSemantics(t *testing.T) {
@@ -31,5 +33,41 @@ func TestTabPinKindsPreserveOwnershipSemantics(t *testing.T) {
 	explicit := WithTabID(owned, "45")
 	if got := TabIDFromContext(explicit); got != "45" || !TabIDIsExplicit(explicit) || TabIDRequiresCurrentOwnership(explicit) {
 		t.Fatalf("explicit pin: id=%q explicit=%t requires_ownership=%t", got, TabIDIsExplicit(explicit), TabIDRequiresCurrentOwnership(explicit))
+	}
+}
+
+func TestSpecializedTabContextsEnforceAccessBeforeBrowserWork(t *testing.T) {
+	denied := errors.New("fixture private tab access denied")
+	ctx := WithTabID(context.Background(), "private-tab")
+	for name, call := range map[string]func(*Manager) error{
+		"devtools": func(m *Manager) error {
+			_, _, cancel, err := m.devtoolsContext(ctx, time.Second)
+			if cancel != nil {
+				cancel()
+			}
+			return err
+		},
+		"dialog": func(m *Manager) error {
+			_, err := m.Dialog(ctx, DialogOptions{Action: "status", TabID: "private-tab"})
+			return err
+		},
+		"stream": func(m *Manager) error { _, err := m.tabContextFor(ctx); return err },
+		"route": func(m *Manager) error {
+			_, err := m.Route(ctx, RouteOptions{Action: "list", TabID: "private-tab"})
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := &Manager{remote: &RemoteTarget{ExpiresAt: time.Now().Add(-time.Hour)}}
+			m.SetTabAccessGuard(func(got context.Context, id string) error {
+				if got != ctx || id != "private-tab" {
+					t.Fatalf("guard got context %v and tab %q", got, id)
+				}
+				return denied
+			})
+			if err := call(m); !errors.Is(err, denied) {
+				t.Fatalf("tab operation = %v, want the access refusal before browser work", err)
+			}
+		})
 	}
 }

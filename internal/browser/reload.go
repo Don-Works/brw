@@ -14,10 +14,13 @@ func (m *Manager) ReloadPage(ctx context.Context) error {
 	if err := m.guardTakeover("reload"); err != nil {
 		return err
 	}
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return err
 	}
 	defer cancel()
-	return chromedp.Run(tabCtx, chromedp.Reload())
+	if err := chromedp.Run(tabCtx, chromedp.Reload()); err != nil {
+		return err
+	}
+	return m.guardCurrentURL(tabID, tabCtx)
 }

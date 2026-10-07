@@ -163,10 +163,17 @@ func (m *Manager) ScreencastFrames(ctx context.Context, opts ScreencastOptions) 
 // because the counts are a measurement of one run, not part of the transport
 // capability every consumer has to implement.
 func (m *Manager) screencastFrames(ctx context.Context, opts ScreencastOptions) (<-chan ScreencastFrame, func(), func() screencastStats, error) {
-	_, tabCtx, cancel, err := m.activeContext(ctx)
+	tabID, tabCtx, cancel, err := m.activeContext(ctx)
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	if err := m.guardCurrentURL(tabID, tabCtx); err != nil {
+		cancel()
+		return nil, nil, nil, err
+	}
+	check := FrameReadCheckFromContext(tabCtx)
+	admitted := true
+	var generation uint64
 
 	quality := opts.Quality
 	if quality <= 0 || quality > 100 {
@@ -192,6 +199,24 @@ func (m *Manager) screencastFrames(ctx context.Context, opts ScreencastOptions) 
 	// Register the listener BEFORE starting, so the first frame — the one an
 	// otherwise-static page depends on — cannot arrive before we are listening.
 	chromedp.ListenTarget(tabCtx, func(ev any) {
+		if navigation, ok := ev.(*page.EventFrameNavigated); ok && check != nil && navigation.Frame != nil && navigation.Frame.ParentID == "" {
+			sendMu.Lock()
+			admitted = false
+			generation++
+			epoch := generation
+			sendMu.Unlock()
+			go func() {
+				if err := check(navigation.Frame.URL); err != nil {
+					cancel()
+					return
+				}
+				sendMu.Lock()
+				if generation == epoch {
+					admitted = true
+				}
+				sendMu.Unlock()
+			}()
+		}
 		e, ok := ev.(*page.EventScreencastFrame)
 		if !ok {
 			return
@@ -234,7 +259,7 @@ func (m *Manager) screencastFrames(ctx context.Context, opts ScreencastOptions) 
 		}
 		sendMu.RLock()
 		defer sendMu.RUnlock()
-		if closed {
+		if closed || !admitted {
 			return
 		}
 		select {
@@ -269,7 +294,7 @@ func (m *Manager) screencastFrames(ctx context.Context, opts ScreencastOptions) 
 	stop := func() {
 		stopOnce.Do(func() {
 			// Stop on tabCtx while it is still live, then release it.
-			stopCtx, stopCancel := context.WithTimeout(tabCtx, m.timeout)
+			stopCtx, stopCancel := context.WithTimeout(context.WithoutCancel(tabCtx), m.timeout)
 			_ = chromedp.Run(stopCtx, page.StopScreencast())
 			stopCancel()
 			cancel()
@@ -279,5 +304,6 @@ func (m *Manager) screencastFrames(ctx context.Context, opts ScreencastOptions) 
 			sendMu.Unlock()
 		})
 	}
+	context.AfterFunc(tabCtx, stop)
 	return frames, stop, counters.snapshot, nil
 }
