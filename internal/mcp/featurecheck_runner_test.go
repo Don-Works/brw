@@ -52,7 +52,7 @@ type featureHarness struct {
 	Manager       *browser.Manager
 	Fixture       *testbed.Server
 	TabID         string
-	AnchorID      string
+	startupTabs   map[string]bool
 	Consent       *siteconsent.Guard
 	Approvals     *approval.Store
 	Root          string
@@ -175,14 +175,30 @@ func (h *featureHarness) reset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if h.startupTabs == nil {
+		h.startupTabs = map[string]bool{}
+		for _, tab := range tabs {
+			if tab.Type == "page" {
+				h.startupTabs[tab.ID] = true
+			}
+		}
+	}
 	for _, tab := range tabs {
-		if tab.Type == "page" {
-			if h.AnchorID == "" {
-				h.AnchorID = tab.ID
-			}
-			if tab.ID != h.AnchorID {
-				_ = h.Manager.CloseTab(h.Ctx, tab.ID)
-			}
+		if tab.Type == "page" && !h.startupTabs[tab.ID] {
+			_ = h.Manager.CloseTab(h.Ctx, tab.ID)
+		}
+	}
+	remaining, err := h.Manager.ListTabs(h.Ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	present := map[string]bool{}
+	for _, tab := range remaining {
+		present[tab.ID] = true
+	}
+	for id := range h.startupTabs {
+		if !present[id] {
+			t.Fatalf("fixture reset closed startup browser target %s", id)
 		}
 	}
 	root, err := os.MkdirTemp(h.Root, "case-")
