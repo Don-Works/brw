@@ -5,11 +5,6 @@ import (
 	"testing"
 )
 
-// TestReadShadowAppNeverReturnsScriptSource is the shape of a Polymer app such
-// as developer.chrome.com/origintrials: the light DOM holds only <script>,
-// <noscript> and a custom element whose content is in its shadow root. The body's
-// innerText is empty, and the reader used to fall back to textContent, which is
-// the source code of those scripts.
 func TestReadShadowAppNeverReturnsScriptSource(t *testing.T) {
 	ctx, cancel := readTestContext(t)
 	defer cancel()

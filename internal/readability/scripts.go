@@ -9,16 +9,8 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// readMinMainLen is the threshold below which .main is considered too short to be
-// useful, triggering the document-text fallback and (on CSR/SPA shells) the brief
-// content-settle wait before giving up.
 const readMinMainLen = 50
 
-// readSettleCapMS bounds how long ReadScript waits for client-side-rendered
-// content to populate the DOM when the first synchronous extraction comes back
-// empty/near-empty. It resolves the MOMENT real text appears (MutationObserver),
-// so well-formed pages pay nothing and only blank SPA shells wait — and never
-// longer than this cap.
 const readSettleCapMS = 800
 
 const ReadScript = `(function(minMainLen, settleCapMs) {
@@ -29,7 +21,7 @@ const ReadScript = `(function(minMainLen, settleCapMs) {
   }
   function visibleTextFrom(root) {
     if (!root) return '';
-    var out = [];
+    var out = [], chars = 0;
     var skipped = /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|HEAD)$/;
     try {
       var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
@@ -52,8 +44,10 @@ const ReadScript = `(function(minMainLen, settleCapMs) {
         }
       });
       var node;
-      while ((node = walker.nextNode()) && out.join(' ').length < 100000) {
-        out.push(clean(node.nodeValue || ''));
+      while ((node = walker.nextNode()) && chars < 100000) {
+        var part = clean(node.nodeValue || '');
+        chars += part.length + (out.length ? 1 : 0);
+        out.push(part);
       }
     } catch (_) {}
     return clean(out.join(' '));
@@ -323,10 +317,7 @@ const ReadScript = `(function(minMainLen, settleCapMs) {
   });
 })`
 
-// ReadExpr returns the full ReadScript invocation expression (with the
-// min-main-length and CSR settle-cap arguments applied) that resolves to a
-// Promise<PageRead>. Both the direct-CDP path and the extension bridge use it so
-// the script is invoked — not left as a bare function definition — and awaited.
+// ReadExpr returns the full ReadScript invocation expression (with the min-main-length and CSR settle-cap arguments applied) that resolves to a Promise<PageRead>.
 func ReadExpr(settleMS ...int) string {
 	budget := readSettleCapMS
 	if len(settleMS) > 0 {
@@ -335,10 +326,7 @@ func ReadExpr(settleMS ...int) string {
 	return fmt.Sprintf("(%s)(%d,%d)", ReadScript, readMinMainLen, budget)
 }
 
-// Normalize is the shared post-decode hook both transports run on a raw page
-// read. It exists so the direct-CDP path and the extension bridge cannot drift;
-// today it only guarantees non-nil collections, so a caller ranging over
-// Headings/Links/Forms/Tables never has to nil-check first.
+// Normalize is the shared post-decode hook both transports run on a raw page read.
 func Normalize(read PageRead) PageRead {
 	if read.Headings == nil {
 		read.Headings = []Heading{}

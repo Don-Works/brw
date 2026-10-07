@@ -7,46 +7,36 @@ import (
 	"strings"
 )
 
-// Defaults for a bounded page read. A read used to be unbounded up to the
-// in-page 100k-character clip, which lands ~25k tokens of prose in an agent's
-// context from a single call. Bounding by default with explicit paging metadata
-// keeps the common case cheap while leaving the whole document reachable.
+// Defaults for a bounded page read.
 const (
 	DefaultReadMaxChars    = 20000
 	DefaultReadMaxLinks    = 300
 	DefaultReadMaxHeadings = 100
 )
 
-// UnboundedReadChars is the sentinel for "return the whole document", for
-// callers that genuinely want every character in one response.
+// UnboundedReadChars is the sentinel for "return the whole document", for callers that genuinely want every character in one response.
 const UnboundedReadChars = -1
 
-// ReadSections are the selectable parts of a page read. An agent that only
-// wants navigation can ask for headings+links and skip the prose entirely.
+// ReadSections are the selectable parts of a page read.
 var ReadSections = []string{"main", "headings", "links", "forms", "tables", "metadata"}
 
 // ReadOptions bounds what Window keeps from a full page read.
 type ReadOptions struct {
 	SettleMS *int `json:"settle_ms,omitempty"`
-	// MaxChars caps the returned prose. Zero selects DefaultReadMaxChars;
-	// UnboundedReadChars returns everything.
+	// MaxChars caps the returned prose.
 	MaxChars int `json:"max_chars,omitempty"`
 	// Offset is the rune offset into the prose, for paging with NextOffset.
 	Offset int `json:"offset,omitempty"`
-	// Include selects sections by name. Empty means every section.
+	// Include selects sections by name.
 	Include SectionList `json:"include,omitempty"`
-	// Section names a heading; the prose returned is that heading's span, ending
-	// at the next heading of the same or higher level. Applied before MaxChars
-	// and Offset, which then page within the section.
+	// Section names a heading; the prose returned is that heading's span, ending at the next heading of the same or higher level.
 	Section string `json:"section,omitempty"`
-	// MaxLinks and MaxHeadings cap their lists. Zero selects the defaults.
+	// MaxLinks and MaxHeadings cap their lists.
 	MaxLinks    int `json:"max_links,omitempty"`
 	MaxHeadings int `json:"max_headings,omitempty"`
 }
 
-// SectionList is the include parameter's wire form. It decodes from a JSON
-// array of names or from one comma-separated string, because callers send both
-// and the array-only form rejected the string with an unmarshal error.
+// SectionList is the include parameter's wire form.
 type SectionList []string
 
 func (l *SectionList) UnmarshalJSON(data []byte) error {
@@ -63,8 +53,7 @@ func (l *SectionList) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Validate reports unknown section names rather than silently dropping them, so
-// a typo surfaces as an error instead of a quietly empty read.
+// Validate reports unknown section names rather than silently dropping them, so a typo surfaces as an error instead of a quietly empty read.
 func (o ReadOptions) Validate() error {
 	if o.SettleMS != nil && (*o.SettleMS < 0 || *o.SettleMS > 5000) {
 		return fmt.Errorf("settle_ms must be an integer from 0 to 5000")
@@ -106,10 +95,6 @@ type SectionSpan struct {
 	End     int
 }
 
-// addressableOffset returns a heading's position within the prose, and whether
-// it can be addressed at all. A nil offset means the read came from a source
-// that does not compute them; a negative one means the heading sits outside the
-// extracted prose. Neither can be sliced from.
 func addressableOffset(heading Heading) (int, bool) {
 	if heading.Offset == nil || *heading.Offset < 0 {
 		return 0, false
@@ -117,9 +102,7 @@ func addressableOffset(heading Heading) (int, bool) {
 	return *heading.Offset, true
 }
 
-// SectionsAddressable reports whether a read carries the heading offsets that
-// section selection needs. False means the caller should say so rather than
-// return a span it cannot compute.
+// SectionsAddressable reports whether a read carries the heading offsets that section selection needs.
 func SectionsAddressable(headings []Heading) bool {
 	for _, heading := range headings {
 		if _, ok := addressableOffset(heading); ok {
@@ -129,11 +112,7 @@ func SectionsAddressable(headings []Heading) bool {
 	return false
 }
 
-// FindSectionSpan locates the span a heading owns: from the heading itself to
-// the next heading of the same or higher level, or the end of the prose. A
-// heading with no addressable offset is skipped. Matching is case-insensitive
-// on the trimmed heading text, and prefers an exact match over a substring one
-// so "Install" does not silently select "Installation" when both exist.
+// FindSectionSpan locates the span a heading owns: from the heading itself to the next heading of the same or higher level, or the end of the prose.
 func FindSectionSpan(headings []Heading, totalRunes int, name string) (SectionSpan, bool) {
 	want := strings.ToLower(strings.TrimSpace(name))
 	if want == "" || totalRunes == 0 {
@@ -160,18 +139,13 @@ func FindSectionSpan(headings []Heading, totalRunes int, name string) (SectionSp
 		return SectionSpan{}, false
 	}
 
-	// The section ends at the NEAREST following sibling-or-shallower heading,
-	// chosen by offset rather than by position in the slice. A headings payload
-	// that arrives out of document order would otherwise produce a span that
-	// overruns its neighbour.
 	end := totalRunes
 	for _, later := range headings {
 		offset, ok := addressableOffset(later)
 		if !ok || offset <= bestStart || offset >= end {
 			continue
 		}
-		// A deeper heading is part of this section; only a sibling or an
-		// ancestor ends it.
+
 		if later.Level <= headings[best].Level {
 			end = offset
 		}
@@ -185,8 +159,7 @@ func FindSectionSpan(headings []Heading, totalRunes int, name string) (SectionSp
 	return SectionSpan{Heading: headings[best].Text, Level: headings[best].Level, Start: bestStart, End: end}, true
 }
 
-// SectionNames lists the addressable headings, for an error that tells a caller
-// what it could have asked for instead.
+// SectionNames lists the addressable headings, for an error that tells a caller what it could have asked for instead.
 func SectionNames(headings []Heading) []string {
 	out := make([]string, 0, len(headings))
 	for _, heading := range headings {
@@ -197,16 +170,14 @@ func SectionNames(headings []Heading) []string {
 	return out
 }
 
-// Window returns a bounded copy of read. It never mutates the input.
+// Window returns a bounded copy of read.
 func Window(read PageRead, opts ReadOptions) PageRead {
 	out := read
 
 	if opts.wants("main") {
 		prose := read.Main
 		if opts.Section != "" {
-			// A section that cannot be found is reported by the caller as an
-			// argument error; Window falls back to the whole document rather
-			// than inventing an empty one.
+
 			if span, ok := FindSectionSpan(read.Headings, len([]rune(read.Main)), opts.Section); ok {
 				runes := []rune(read.Main)
 				prose = string(runes[span.Start:span.End])
@@ -223,12 +194,12 @@ func Window(read PageRead, opts ReadOptions) PageRead {
 	if !opts.wants("headings") {
 		out.Headings = nil
 	} else {
-		out.Headings, out.HeadingsTruncated = capHeadings(read.Headings, limitOr(opts.MaxHeadings, DefaultReadMaxHeadings))
+		out.Headings, out.HeadingsTruncated = capItems(read.Headings, limitOr(opts.MaxHeadings, DefaultReadMaxHeadings))
 	}
 	if !opts.wants("links") {
 		out.Links = nil
 	} else {
-		out.Links, out.LinksTruncated = capLinks(read.Links, limitOr(opts.MaxLinks, DefaultReadMaxLinks))
+		out.Links, out.LinksTruncated = capItems(read.Links, limitOr(opts.MaxLinks, DefaultReadMaxLinks))
 	}
 	if !opts.wants("forms") {
 		out.Forms = nil
@@ -247,8 +218,6 @@ func Window(read PageRead, opts ReadOptions) PageRead {
 	return out
 }
 
-// windowText slices prose on rune boundaries so a multi-byte character is never
-// split across the cut, and reports what was left behind.
 func windowText(text string, opts ReadOptions) (windowed string, total int, truncated bool, nextOffset int) {
 	runes := []rune(text)
 	total = len(runes)
@@ -269,10 +238,6 @@ func windowText(text string, opts ReadOptions) (windowed string, total int, trun
 		limit = DefaultReadMaxChars
 	}
 
-	// Compare against the remaining length rather than computing offset+limit
-	// first: a caller-supplied max_chars near MaxInt overflows that addition to a
-	// negative number, and the slice that follows panics the daemon. offset is
-	// already known to be < total here, so total-offset cannot underflow.
 	if limit >= total-offset {
 		return string(runes[offset:]), total, false, 0
 	}
@@ -290,22 +255,13 @@ func limitOr(value, fallback int) int {
 	return value
 }
 
-func capHeadings(items []Heading, limit int) ([]Heading, bool) {
+func capItems[T any](items []T, limit int) ([]T, bool) {
 	if limit == UnboundedReadChars || len(items) <= limit {
 		return items, false
 	}
 	return items[:limit], true
 }
 
-func capLinks(items []Link, limit int) ([]Link, bool) {
-	if limit == UnboundedReadChars || len(items) <= limit {
-		return items, false
-	}
-	return items[:limit], true
-}
-
-// NormalizeSections lowercases and de-duplicates section names, preserving a
-// stable order so identical requests produce identical responses.
 func NormalizeSections(names []string) []string {
 	if len(names) == 0 {
 		return nil

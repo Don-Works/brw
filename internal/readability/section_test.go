@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-// offsetOf builds the heading offset the in-page extractor computes, as a
-// pointer so an absent offset stays distinguishable from position zero.
 func offsetOf(main, heading string) *int {
 	at := strings.Index(main, heading)
 	return &at
@@ -14,15 +12,12 @@ func offsetOf(main, heading string) *int {
 
 func intPtr(v int) *int { return &v }
 
-// sectionedRead builds a document whose prose contains its headings verbatim,
-// matching what the in-page extractor produces (both go through the same
-// whitespace-collapsing text() helper).
 func sectionedRead() PageRead {
-	main := "Intro one two three " + // 0
-		"Install Run the installer " + // 20
-		"Linux apt install it " + // 47
-		"macOS brew install it " + // 68
-		"Usage Call the binary" // 91
+	main := "Intro one two three " +
+		"Install Run the installer " +
+		"Linux apt install it " +
+		"macOS brew install it " +
+		"Usage Call the binary"
 	return PageRead{
 		Main: main,
 		Headings: []Heading{
@@ -43,7 +38,6 @@ func TestFindSectionSpanEndsAtNextSiblingHeading(t *testing.T) {
 	}
 	got := string([]rune(read.Main)[span.Start:span.End])
 
-	// A deeper heading belongs to the section; the next same-level heading ends it.
 	if !strings.Contains(got, "Linux") || !strings.Contains(got, "macOS") {
 		t.Fatalf("section dropped its subsections: %q", got)
 	}
@@ -79,8 +73,6 @@ func TestFindSectionSpanLastSectionRunsToEnd(t *testing.T) {
 	}
 }
 
-// An exact match must win over a substring one, or asking for a short heading
-// silently returns a longer one that merely contains it.
 func TestFindSectionSpanPrefersExactMatch(t *testing.T) {
 	main := "Installation notes here Install do this"
 	headings := []Heading{
@@ -104,8 +96,7 @@ func TestFindSectionSpanIsCaseInsensitive(t *testing.T) {
 }
 
 func TestFindSectionSpanSkipsUnaddressableHeadings(t *testing.T) {
-	// Offset -1 marks a heading outside the extracted prose. Selecting it would
-	// slice from a guessed position, so it must not be addressable at all.
+
 	headings := []Heading{{Level: 1, Text: "Sidebar", Offset: intPtr(-1)}}
 	if _, ok := FindSectionSpan(headings, 100, "Sidebar"); ok {
 		t.Fatal("a heading with no offset was treated as addressable")
@@ -141,14 +132,12 @@ func TestWindowSectionReturnsOnlyThatSpan(t *testing.T) {
 	if strings.Contains(got.Main, "apt install") {
 		t.Fatalf("section leaked another section's content: %q", got.Main)
 	}
-	// Bounds apply within the section, so main_total_chars is the section's
-	// length rather than the document's.
+
 	if got.MainTotalChars >= len([]rune(read.Main)) {
 		t.Fatalf("main_total_chars = %d, want the section length not the document length", got.MainTotalChars)
 	}
 }
 
-// A section still pages, so a huge section is not a way around the bound.
 func TestWindowSectionStillPages(t *testing.T) {
 	main := "Big " + strings.Repeat("x", 100)
 	read := PageRead{
@@ -164,11 +153,6 @@ func TestWindowSectionStillPages(t *testing.T) {
 	}
 }
 
-// A read from a source that does not compute heading offsets must not be
-// silently treated as a document whose headings all start at position zero.
-// Found by driving this build against an older upstream in proxy mode: every
-// section resolved to offset 0 and returned the whole page while reporting that
-// it had found the section.
 func TestSectionsUnavailableWhenOffsetsAreAbsent(t *testing.T) {
 	read := PageRead{
 		Main: "Intro one two three Install Run the installer Usage Call the binary",
@@ -189,8 +173,6 @@ func TestSectionsUnavailableWhenOffsetsAreAbsent(t *testing.T) {
 		t.Fatalf("SectionNames offered %v from headings with no offsets", names)
 	}
 
-	// Window must leave the prose alone rather than slice a span it cannot
-	// compute, and must not claim to have resolved a section.
 	got := Window(read, ReadOptions{Section: "Usage", MaxChars: UnboundedReadChars})
 	if got.Main != read.Main {
 		t.Fatalf("prose was sliced despite unusable offsets: %q", got.Main)
@@ -200,8 +182,6 @@ func TestSectionsUnavailableWhenOffsetsAreAbsent(t *testing.T) {
 	}
 }
 
-// A heading genuinely at position zero is addressable; only a nil offset means
-// unknown.
 func TestSectionAtPositionZeroIsAddressable(t *testing.T) {
 	read := PageRead{
 		Main:     "Intro one two Usage three",

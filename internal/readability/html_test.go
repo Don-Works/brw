@@ -39,3 +39,15 @@ func TestHTMLPreservesCodeWithoutMainLandmark(t *testing.T) {
 		t.Fatalf("code changed: %q", read.Main)
 	}
 }
+
+func TestMarkdownTitleUsesRealHeadings(t *testing.T) {
+	for _, tc := range []struct{ title, markdown, want string }{
+		{"", "```\n# Code example\n```\n\n## Article\nBody", "Article"},
+		{"", "#hashtag\n\n# Article\nBody", "Article"},
+		{"Provided title", "# Article", "Provided title"},
+	} {
+		if got := FromMarkdown("https://example.test/", tc.title, tc.markdown); got.Title != tc.want {
+			t.Errorf("title=%q, want %q", got.Title, tc.want)
+		}
+	}
+}

@@ -54,11 +54,9 @@ func TestWindowBoundsProseAndReportsNextOffset(t *testing.T) {
 	}
 }
 
-// Paging must reassemble the original document exactly, or an agent that pages
-// through a long article silently loses or duplicates a slice of it.
 func TestWindowPagingReassemblesWholeDocument(t *testing.T) {
 	read := sampleRead()
-	read.Main = strings.Repeat("abcde", 40) // 200 chars
+	read.Main = strings.Repeat("abcde", 40)
 
 	var rebuilt strings.Builder
 	offset := 0
@@ -78,11 +76,9 @@ func TestWindowPagingReassemblesWholeDocument(t *testing.T) {
 	}
 }
 
-// Slicing prose by byte would split a multi-byte character and hand the agent
-// invalid UTF-8 at every page boundary.
 func TestWindowCutsOnRuneBoundaries(t *testing.T) {
 	read := sampleRead()
-	read.Main = strings.Repeat("日本語", 20) // 60 runes, 180 bytes
+	read.Main = strings.Repeat("日本語", 20)
 
 	page := Window(read, ReadOptions{MaxChars: 10})
 	if got := []rune(page.Main); len(got) != 10 {
@@ -136,8 +132,7 @@ func TestWindowIncludeSelectsSections(t *testing.T) {
 	if len(got.Forms) != 0 || len(got.Tables) != 0 || got.Metadata.Lang != "" {
 		t.Fatalf("unrequested sections returned: %+v", got)
 	}
-	// The count survives even when the prose itself is skipped, so an agent can
-	// tell how much it chose not to fetch.
+
 	if got.MainTotalChars != 100 {
 		t.Fatalf("main_total_chars = %d, want 100", got.MainTotalChars)
 	}

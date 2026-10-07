@@ -21,8 +21,7 @@ func readTestContext(t *testing.T) (context.Context, context.CancelFunc) {
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	ctx, cancel := chromedp.NewContext(allocCtx)
 	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 30*time.Second)
-	// Warm up so allocator/browser errors surface here and the test can skip
-	// cleanly when no Chrome is available.
+
 	if err := chromedp.Run(timeoutCtx); err != nil {
 		timeoutCancel()
 		cancel()
@@ -50,12 +49,6 @@ func navigateRead(t *testing.T, ctx context.Context, html string) PageRead {
 	return read
 }
 
-// TestReadLinkHeavyPageFallsBackToDocumentText proves SPEC 3: on a link-heavy
-// page (Hacker News / Wikipedia-category shape — nested divs, almost all visible
-// text is links, no <article>/<main>) the link-text penalty in bestMain() drives
-// the scored main element to <body>, and historically .main came back empty
-// because text(mainEl) was effectively blank while links extracted fine. The
-// two-tier fallback must now return non-empty document text.
 func TestReadLinkHeavyPageFallsBackToDocumentText(t *testing.T) {
 	html := `<!DOCTYPE html><html><body>
 <div><div>
@@ -73,9 +66,7 @@ func TestReadLinkHeavyPageFallsBackToDocumentText(t *testing.T) {
 	if strings.TrimSpace(read.Main) == "" {
 		t.Fatalf("link-heavy page returned empty .main despite visible text; links=%d", len(read.Links))
 	}
-	// The prose used to ship twice, as "text" and "main" carrying the identical
-	// string, so every read paid for its content two times over. Lock the alias
-	// out at the wire level, not just the struct level.
+
 	encoded, err := json.Marshal(read)
 	if err != nil {
 		t.Fatalf("marshal read: %v", err)
@@ -95,14 +86,8 @@ func TestReadLinkHeavyPageFallsBackToDocumentText(t *testing.T) {
 	}
 }
 
-// TestReadCSRPageWaitsForDeferredContent proves SPEC 2: a heavy client-side
-// rendered page serves a near-empty shell on first paint and streams the real
-// content in milliseconds later. A single synchronous extract returns blank
-// .main; the brief CSR settle wait must observe the deferred DOM mutation and
-// return the populated content rather than empty.
 func TestReadCSRPageWaitsForDeferredContent(t *testing.T) {
-	// The body is empty at load; a microtask-delayed script injects the real
-	// article text after a short delay, simulating an SPA hydration/render.
+
 	html := `<!DOCTYPE html><html><head><title>CSR App</title></head><body>
 <div id="app"></div>
 <script>
@@ -127,10 +112,6 @@ setTimeout(function(){
 	}
 }
 
-// TestReadArticlePagePreservesSemanticExtraction is the regression guard: a
-// well-formed article must still extract its semantic <article> body and must not
-// be diluted by the fallback (the fallback only fires when primary text < 50
-// chars).
 func TestReadArticlePagePreservesSemanticExtraction(t *testing.T) {
 	html := `<!DOCTYPE html><html><body>
 <nav><a href="/x">Nav One</a> <a href="/y">Nav Two</a></nav>
