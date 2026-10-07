@@ -95,9 +95,9 @@ For `approval_required`, follow [operator approvals](references/approvals.md).
 ## If your tool list looks short
 
 `brwd --mcp` starts with 14 tools in `auto` mode and grows as you search.
-The full surface is 97 tools on a direct-CDP daemon (96 on `--remote`,
-95 on the Chrome opt-in lane, 91 on a plugin-supplied off-host browser,
-81 on the extension bridge). Small initial catalogues reduce attached schemas.
+The full surface is 100 tools on a direct-CDP daemon (97 on `--remote`,
+98 on the Chrome opt-in lane, 94 on a plugin-supplied off-host browser,
+84 on the extension bridge). Small initial catalogues reduce attached schemas.
 
 ```json
 {"name":"brw_tools","arguments":{"query":"read the console"}}

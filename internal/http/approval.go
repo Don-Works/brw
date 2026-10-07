@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 
 	"github.com/Don-Works/brw/internal/approval"
@@ -36,6 +37,39 @@ func approvalPrivacyHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
+}
+
+func (s *Server) approvalRoutes(api http.Handler, common func(http.Handler) http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	for _, route := range []struct {
+		pattern  string
+		operator bool
+		handler  http.HandlerFunc
+	}{
+		{"GET /approvals", false, s.approvalPage},
+		{"GET /operator/approvals", true, s.approvalList},
+		{"POST /operator/approvals/{id}/decision", true, s.approvalDecide},
+	} {
+		method, _, _ := strings.Cut(route.pattern, " ")
+		handler := common(route.handler)
+		mux.HandleFunc(route.pattern, func(w http.ResponseWriter, r *http.Request) {
+			if s.approvals == nil || r.Method != method {
+				api.ServeHTTP(w, r)
+				return
+			}
+			if s.approvalGuard(w, r, route.operator) {
+				handler.ServeHTTP(w, r)
+			}
+		})
+	}
+	mux.Handle("/", api)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawPath != "" || path.Clean(r.URL.Path) != r.URL.Path {
+			api.ServeHTTP(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) approvalGuard(w http.ResponseWriter, r *http.Request, operator bool) bool {

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.21.0 - 2026-10-06
+
+- Add durable read-only page watchers with metadata-only change, unavailable and
+  recovery events. Definitions, baselines, event sequences and bounded queues
+  survive browser-host restart and disposable MCP client exit.
+- Add optional periodic refresh for static pages. Watchers use private background
+  tabs, pin the exact URL, and recheck navigation policy and current read grants.
+  Browser connection ownership guards prevent reading or closing recycled tab IDs.
+- Expose watcher registration, management and event cursors over MCP and HTTP.
+  Consumers persist cursors after processing; delivery may repeat an event and
+  browser sampling can miss activity between observations. Page text, titles and
+  message bodies are never included in the watcher queue.
+- Close proven owned tabs on graceful shutdown, discard unproven tab IDs after
+  restart/reconnection, and honor explicit tab targeting in readiness waits.
+
 ## 0.20.1 - 2026-10-02
 
 - Allow batch `assert_value` steps to check for an empty field on both direct

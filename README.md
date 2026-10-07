@@ -549,11 +549,12 @@ Core MCP tools include:
 - `brw_notify`, `brw_commit`
 - `brw_window_resize` (real OS window, unlike `brw_emulate_device`)
 - `brw_tools` (find and disclose a tool by describing the task)
+- `brw_watch_page`, `brw_page_watchers`, `brw_page_events` ([persistent page activity signals](docs/page-watchers.md), including availability and recovery)
 
 Use `--mcp-tools` to shrink the advertised catalogue while keeping every tool
 callable. The catalogue is re-sent on every request, so a narrower profile saves
-tokens on every turn: on a direct-CDP daemon `all` costs ~37.4k tokens across
-97 tools, `core` ~11.4k, `minimal` ~6.4k, and `auto` starts at ~6.6k and grows
+tokens on every turn: on a direct-CDP daemon `all` costs ~38.1k tokens across
+100 tools, `core` ~11.4k, `minimal` ~6.4k, and `auto` starts at ~6.6k and grows
 only as the agent discovers tools it needs via `brw_tools` (measure with
 `scripts/measure-tool-catalogue.py`).
 

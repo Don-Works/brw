@@ -69,6 +69,7 @@ var remoteSafeSurface = []string{
 	"NavigateTo", "NetworkCapture", "NetworkRequests", "Notify", "Observe",
 	"Open", "OpenInGroup", "OpenIncognito", "Press", "PushState", "Read",
 	"ReadData", "ReplayRequest", "ResizeWindow", "Route", "Screenshot",
+	"ReloadPage",
 	"ScreenshotAnnotated", "ScreenshotElement", "Scroll", "Select",
 	"SetExtraHeaders", "SetGeolocation", "SetNetworkConditions",
 	"SetUserAgent", "Snapshot", "Type", "UngroupTabs", "WaitFor",
@@ -101,6 +102,7 @@ var remoteSafeSurface = []string{
 // to run against somebody else's browser" are different statements and a method
 // filed under the wrong one reads as a decision nobody made.
 var remoteManagerPlumbing = []string{
+	"CheckBackgroundTab", "ReleaseBackgroundTab", "SetTabAccessGuard",
 	"Close", "ContentNavigationGuard", "Remote", "RemoteSession",
 	"SetContentNavigationGuard", "SetNavigationPolicy", "SetSessionStateStore", "Pacing", "SetPacing",
 	// BrowserOnThisHost is the gate's own question, not a verb it guards.
@@ -132,6 +134,7 @@ func remoteSurfaceInterfaces() map[string]reflect.Type {
 		"DialogController":         reflect.TypeOf((*DialogController)(nil)).Elem(),
 		"RouteController":          reflect.TypeOf((*RouteController)(nil)).Elem(),
 		"RouteReplayer":            reflect.TypeOf((*RouteReplayer)(nil)).Elem(),
+		"PageReloader":             reflect.TypeOf((*PageReloader)(nil)).Elem(),
 		"ElementFocuser":           reflect.TypeOf((*ElementFocuser)(nil)).Elem(),
 		"WaitObserver":             reflect.TypeOf((*WaitObserver)(nil)).Elem(),
 		"DocumentIdentityProvider": reflect.TypeOf((*DocumentIdentityProvider)(nil)).Elem(),

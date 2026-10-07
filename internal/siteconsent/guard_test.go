@@ -75,6 +75,33 @@ func TestGrantedOriginIsAuthorized(t *testing.T) {
 	}
 }
 
+func TestUnattendedAuthorizationNeverPromptsAndHonorsRevocation(t *testing.T) {
+	guard := newTestGuard(t, AdminConfig{})
+	prompter := &scriptedPrompter{siteAnswer: true}
+	guard.SetPrompter(prompter)
+	if err := guard.AuthorizeUnattended("https://watch.test/", ScopeRead); err == nil {
+		t.Fatal("unattended call minted a grant")
+	}
+	if prompter.siteAsked != 0 {
+		t.Fatal("background authorization prompted a terminal user")
+	}
+	if _, err := guard.Allow(GrantOptions{Origin: "https://watch.test", Scope: ScopeRead, Actor: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := guard.AuthorizeUnattended("https://watch.test/", ScopeRead); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := guard.Revoke("https://watch.test", ScopeRead, "user"); err != nil {
+		t.Fatal(err)
+	}
+	if err := guard.AuthorizeUnattended("https://watch.test/", ScopeRead); err == nil {
+		t.Fatal("revoked grant authorized watcher")
+	}
+	if prompter.siteAsked != 0 {
+		t.Fatal("revocation prompted a terminal user")
+	}
+}
+
 // TestExpiredGrantRePromptsInsteadOfPassing is acceptance criterion 1's second
 // half.
 func TestExpiredGrantRePromptsInsteadOfPassing(t *testing.T) {

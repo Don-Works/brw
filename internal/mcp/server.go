@@ -20,6 +20,7 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/navpolicy"
+	"github.com/Don-Works/brw/internal/pagewatch"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/recipe"
 	"github.com/Don-Works/brw/internal/siteconsent"
@@ -38,6 +39,7 @@ var Version = "dev"
 
 type Server struct {
 	approvalGate *approvalgate.Gate
+	pageWatch    pagewatch.API
 	manager      browser.Controller
 	skew         versionSkew
 	artifacts    artifact.API
@@ -854,6 +856,9 @@ type activeTabResolver interface {
 var tabAgnosticTools = map[string]bool{
 	"brw_approval_status": true,
 	"brw_approval_resume": true,
+	"brw_watch_page":      true,
+	"brw_page_watchers":   true,
+	"brw_page_events":     true,
 	"brw_identity":        true,
 	skillToolName:         true,
 	"brw_list_tabs":       true,
@@ -2049,6 +2054,8 @@ func (s *Server) callTool(ctx context.Context, name string, args json.RawMessage
 		return toolJSON(s.manager.Cancel(ctx, req.Token))
 	case "brw_observe":
 		return toolJSON(s.manager.Observe(ctx))
+	case "brw_watch_page", "brw_page_watchers", "brw_page_events":
+		return s.pageWatchTool(ctx, name, args)
 	case "brw_page_tools":
 		var req struct {
 			Frame string `json:"frame"`
@@ -2652,6 +2659,24 @@ func tools() []map[string]any {
 	catalogue := []map[string]any{
 		tool("brw_approval_resume", "Execute one approved request using its exact original tool and arguments. Changed state or arguments require new approval; consumed requests cannot be replayed. This tool cannot approve requests.", object(map[string]any{"approval_id": stringSchema("Approved request ID."), "tool": stringSchema("Original brw tool name."), "arguments": map[string]any{"type": "object", "description": "Exact original tool arguments."}}, []string{"approval_id", "tool", "arguments"})),
 		tool("brw_approval_status", "Check an approval request status without exposing its contents. After approved, retry the exact original tool arguments with approval_id. Never retry a consumed action with an uncertain outcome. This tool cannot approve or reject requests.", object(map[string]any{"approval_id": stringSchema("Request ID returned by approval_required.")}, []string{"approval_id"})),
+		tool("brw_watch_page", "Register a persistent read-only page watcher on the browser-host daemon. It opens a private background tab and survives MCP client exit and daemon restart. First successful sample sets a baseline; subsequent changes and unavailable/recovered transitions produce durable metadata-only events. Collect them with brw_page_events, then open your own tab to inspect activity. Exact URL including path, query and fragment is pinned; redirected login pages are refused. Stable id makes identical retries idempotent. Optional refresh_interval_ms refreshes only the private tab for static pages. Browser sampling can miss activity between samples; no model polling is needed.", object(map[string]any{
+			"id":                  stringSchema("Optional stable id: 1..96 letters, digits, underscores or hyphens."),
+			"url":                 stringSchema("Exact http(s) page URL without embedded credentials."),
+			"selector":            stringSchema("CSS selector required for text/count; omitted for title."),
+			"mode":                stringEnumSchema("Default text with selector, title without.", "title", "text", "count"),
+			"interval_ms":         integerSchema("Sampling interval: default5000, minimum1000, maximum300000."),
+			"refresh_interval_ms": integerSchema("Optional private-tab refresh interval: default0 disabled, otherwise5000..3600000."),
+		}, []string{"url"})),
+		tool("brw_page_watchers", "List, pause, resume or remove persistent page watchers. Pause stops sampling and retains baseline/events; resume retries a closed private tab. Remove closes the owned tab and erases registration and event history. Reports status, last_error and durable seq. Watcher tabs are reserved; use brw_open for ordinary browser work.", object(map[string]any{
+			"action": stringEnumSchema("Default list; other actions require id.", "list", "remove", "pause", "resume"),
+			"id":     stringSchema("Watcher id from brw_watch_page."),
+		}, nil)),
+		tool("brw_page_events", "Read durable metadata-only page activity events after since_seq: changed, unavailable or recovered, with timestamp, URL, mode, digest/count and bounded reason. Page text, titles and message bodies are never returned or stored. Retains512 events per watcher; gap marks missed retention and has_more marks another page. Reads do not acknowledge/delete events: persist your cursor after processing. A scheduler can convert these signals into an agent follow-up or mesh ping.", object(map[string]any{
+			"watcher_id": stringSchema("Watcher id from brw_watch_page."),
+			"since_seq":  integerSchema("Exclusive durable event cursor; default0."),
+			"limit":      integerSchema("Default50, minimum1, maximum100."),
+		}, []string{"watcher_id"})),
+
 		tool("brw_open", "Open a URL in a Chrome/Chromium browser tab and exclusively lease it to this session. With no group/group_id the tab lands in this session's per-agent tab group automatically; pass group only for a deliberately different run-scoped group. Close every tab you opened before finishing unless handing it to the human; never close pre-existing tabs. On the extension bridge tabs open in the BACKGROUND, so brw never stomps the human's current tab. To use an existing tab, pass the tab_id of one brw_list_tabs marks available — never one marked leased. When the page offers them the result carries page_tools (WebMCP tools: call them with brw_call_page_tool instead of clicking) and agent_surfaces (MCP, API, markdown or llms endpoints it declares: use those directly).", object(map[string]any{
 			"url":         stringSchema("URL to open. Scheme defaults to https."),
 			"group":       stringSchema("Optional Chrome tab group title overriding the automatic per-agent group. Keep it short, run-scoped, and free of secrets; when set without group_id, the extension reuses an existing same-title group or creates one."),

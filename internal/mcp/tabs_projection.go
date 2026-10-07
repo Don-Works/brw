@@ -128,6 +128,13 @@ func (s *Server) listTabs(ctx context.Context, args json.RawMessage) (any, *rpcE
 		}
 	}
 	tabs, err := s.manager.ListTabs(ctx)
+	if owned, ok := s.pageWatch.(interface{ OwnsTab(string) bool }); ok {
+		for i := range tabs {
+			if owned.OwnsTab(tabs[i].ID) {
+				tabs[i].Lease = &browser.TabLeaseInfo{Status: "leased"}
+			}
+		}
+	}
 	if !opts.compact || err != nil {
 		return toolJSON(tabs, err)
 	}

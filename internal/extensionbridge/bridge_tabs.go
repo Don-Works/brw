@@ -25,6 +25,11 @@ func (b *Bridge) SetRaiseWindowOnFocus(v bool) { b.raiseWindowOnFocus = v }
 // actions; see the followFocus field. Call before serving.
 func (b *Bridge) SetFollowFocus(v bool) { b.followFocus = v }
 
+// SetTabAccessGuard reserves the browser-host service's private watcher tabs.
+func (b *Bridge) SetTabAccessGuard(check func(context.Context, string) error) {
+	b.tabAccessGuard = check
+}
+
 // openTabParams opens the tab in the background in isolation so the user's
 // view never switches. Extensions without the active flag treat it as true.
 func (b *Bridge) openTabParams(params map[string]any) map[string]any {
@@ -52,7 +57,11 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 	if err != nil {
 		return browser.OpenResult{}, err
 	}
-	raw, err := b.call(ctx, "open_tab", b.openTabParams(map[string]any{"url": url}))
+	params := b.openTabParams(map[string]any{"url": url})
+	if browser.IsBackgroundPage(ctx) {
+		params["active"] = false
+	}
+	raw, err := b.call(ctx, "open_tab", params)
 	if err != nil {
 		return browser.OpenResult{}, err
 	}
@@ -72,7 +81,9 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 		}
 		b.recordObservation(out.ID, browser.TraceActionOpen, finalURL, start, err)
 	}
-	b.setActiveTabID(out.ID)
+	if !browser.IsBackgroundPage(ctx) {
+		b.setActiveTabID(out.ID)
+	}
 	// Containment is armed just AFTER the first document starts; only scripts
 	// already run in it can hold pristine WebSocket/RTC references.
 	b.ensureContainment(ctx, out.ID)
@@ -83,7 +94,7 @@ func (b *Bridge) Open(ctx context.Context, url string) (browser.OpenResult, erro
 	out = b.refreshOpenedTab(ctx, out, url)
 	result := b.openResult(ctx, out, url, ready)
 	// Isolation resolves by owned id, so only follow-focus must foreground the tab.
-	if b.followFocus {
+	if b.followFocus && !browser.IsBackgroundPage(ctx) {
 		if err := b.ensureForegroundTab(ctx, out.ID); err != nil {
 			recordOpen(out.URL, err)
 			return result, err
@@ -313,7 +324,11 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 	if opts.Color != "" {
 		params["groupColor"] = opts.Color
 	}
-	raw, err := b.call(ctx, "open_tab", b.openTabParams(params))
+	params = b.openTabParams(params)
+	if browser.IsBackgroundPage(ctx) {
+		params["active"] = false
+	}
+	raw, err := b.call(ctx, "open_tab", params)
 	if err != nil {
 		return browser.OpenResult{}, err
 	}
@@ -331,7 +346,9 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 		}
 		b.recordObservation(out.ID, browser.TraceActionOpen, finalURL, start, err)
 	}
-	b.setActiveTabID(out.ID)
+	if !browser.IsBackgroundPage(ctx) {
+		b.setActiveTabID(out.ID)
+	}
 	b.ensureContainment(ctx, out.ID)
 	b.noteOpenedWebMCP(ctx, out.ID, tab.WebMCPArmed)
 	ready := b.waitOpenReady(ctx, url, out.ID)
@@ -339,7 +356,7 @@ func (b *Bridge) OpenInGroup(ctx context.Context, url string, opts browser.TabGr
 	out = b.refreshOpenedTab(ctx, out, url)
 	b.recordTabGroupDegradation(out.GroupWarning)
 	result := b.openResult(ctx, out, url, ready)
-	if b.followFocus {
+	if b.followFocus && !browser.IsBackgroundPage(ctx) {
 		if err := b.ensureForegroundTab(ctx, out.ID); err != nil {
 			recordOpen(out.URL, err)
 			return result, err

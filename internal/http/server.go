@@ -22,6 +22,7 @@ import (
 	"github.com/Don-Works/brw/internal/browser"
 	"github.com/Don-Works/brw/internal/brwidentity"
 	"github.com/Don-Works/brw/internal/navpolicy"
+	"github.com/Don-Works/brw/internal/pagewatch"
 	"github.com/Don-Works/brw/internal/plugin"
 	"github.com/Don-Works/brw/internal/readability"
 	"github.com/Don-Works/brw/internal/recipe"
@@ -34,6 +35,7 @@ type Server struct {
 	approvalGate          *approvalgate.Gate
 	approvals             *approval.Store
 	approvalOperatorToken string
+	pageWatch             pagewatch.API
 	manager               browser.Controller
 	artifacts             artifact.API
 	recipes               recipe.API
@@ -78,6 +80,10 @@ type Server struct {
 
 	roster            ProfileRoster
 	profilePolicyPath string
+
+	// authDigest is the SHA-256 of the bearer token every request must carry.
+	// Nil leaves the listener unauthenticated.
+	authDigest []byte
 }
 
 type snapshotRequest struct {
@@ -134,7 +140,10 @@ func NewWithIdentity(addr string, manager browser.Controller, identity brwidenti
 	// The idle tracker sits outermost so a request that a guard refuses still
 	// counts as somebody using the daemon: a client being told no repeatedly is
 	// not an abandoned daemon.
-	s.server.Handler = s.idleMiddleware(s.usageMiddleware(s.hostGuard(s.artifactPrivacyHeaders(s.consentMiddleware(s.leaseMiddleware(s.approvalMiddleware(mux)))))))
+	common := func(next http.Handler) http.Handler {
+		return s.usageMiddleware(s.hostGuard(s.artifactPrivacyHeaders(s.consentMiddleware(s.leaseMiddleware(s.approvalMiddleware(next))))))
+	}
+	s.server.Handler = s.idleMiddleware(s.approvalRoutes(s.bearerGuard(common(mux)), common))
 	return s
 }
 
@@ -333,10 +342,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /approvals", s.approvalPage)
-	mux.HandleFunc("GET /operator/approvals", s.approvalList)
-	mux.HandleFunc("POST /operator/approvals/{id}/decision", s.approvalDecide)
 	mux.HandleFunc("GET /api/approvals/{id}", s.approvalStatus)
+	mux.HandleFunc("POST /api/watchers/register", s.watchPage)
+	mux.HandleFunc("POST /api/watchers/manage", s.pageWatchers)
+	mux.HandleFunc("POST /api/watchers/events", s.pageEvents)
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("POST /api/usage/report", s.reportUsage)
 	// The profile roster: loopback-only, and it reaches browsers only through
@@ -953,6 +962,13 @@ func (s *Server) tabs(w http.ResponseWriter, r *http.Request) {
 	tabs, err := s.manager.ListTabs(r.Context())
 	if err == nil {
 		tabs = s.leases.annotate(leaseOwner(r.Context()), tabs)
+		if owned, ok := s.pageWatch.(interface{ OwnsTab(string) bool }); ok {
+			for i := range tabs {
+				if owned.OwnsTab(tabs[i].ID) {
+					tabs[i].Lease = &browser.TabLeaseInfo{Status: "leased"}
+				}
+			}
+		}
 	}
 	writeResult(w, tabs, err)
 }

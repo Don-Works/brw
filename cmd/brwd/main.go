@@ -34,6 +34,7 @@ import (
 	"github.com/Don-Works/brw/internal/httpclient"
 	"github.com/Don-Works/brw/internal/mcp"
 	"github.com/Don-Works/brw/internal/navpolicy"
+	"github.com/Don-Works/brw/internal/pagewatch"
 	"github.com/Don-Works/brw/internal/plugin"
 	"github.com/Don-Works/brw/internal/profilepolicy"
 	"github.com/Don-Works/brw/internal/profileroster"
@@ -60,6 +61,8 @@ func (s *stringList) Set(value string) error {
 }
 
 func main() {
+	var pageWatchRoot string
+	flag.StringVar(&pageWatchRoot, "page-watch-root", envDefault("BRW_PAGE_WATCH_ROOT", "auto"), "persistent page watcher store: auto uses an owner-only workspace/profile directory outside the repository; off disables watchers; otherwise an absolute directory. Sampling runs on the browser host, independently of MCP clients.")
 	log.SetOutput(os.Stderr)
 	// An exported HAR names the brw that produced it, so the build's version has
 	// to reach the artifact package as well as the usage ledger.
@@ -111,6 +114,8 @@ func main() {
 	var recipeRoot string
 	var recipeProviderURL string
 	var recipeProviderTokenFile string
+	var httpTokenFile string
+	var upstreamTokenFile string
 	var pluginDir string
 	var proxyServer string
 	var proxyBypassList string
@@ -145,6 +150,8 @@ func main() {
 	flag.BoolVar(&bridgeFollowFocus, "bridge-follow-focus", envBool("BRW_BRIDGE_FOLLOW_FOCUS"), "bridge: follow the user's manually-focused Chrome tab for no-tab_id actions (legacy behavior). OFF by default: brw works in its own tab group on tabs it opened (opening a fresh one when needed) and never touches your existing tabs unless you pass tab_id. Turn on for an interactive session where you want brw to act on whatever tab you have selected.")
 	flag.IntVar(&bridgeMaxInflight, "bridge-max-inflight", envInt("BRW_BRIDGE_MAX_INFLIGHT", 6), "bridge: max concurrent operations on the shared extension socket. Excess calls queue and, past the deadline, fail fast with a busy signal. Caps load on the single Chrome extension worker so many parallel agents can't wedge it. 0 disables the cap.")
 	flag.StringVar(&upstreamHTTP, "upstream-http", os.Getenv("BRW_UPSTREAM_HTTP"), "proxy MCP/HTTP control to an existing local brw HTTP daemon")
+	flag.StringVar(&httpTokenFile, "http-token-file", os.Getenv("BRW_HTTP_TOKEN_FILE"), "absolute path to an owner-only file holding a bearer token of at least 32 characters; every HTTP request must then send Authorization: Bearer <token>. Use it whenever --http binds a non-loopback address. Never logged.")
+	flag.StringVar(&upstreamTokenFile, "upstream-token-file", os.Getenv("BRW_UPSTREAM_TOKEN_FILE"), "absolute path to an owner-only file holding the bearer token the --upstream-http daemon requires. BRW_UPSTREAM_TOKEN supplies the token itself when no file is given. Never logged.")
 	flag.StringVar(&cfg.RemoteURL, "remote", os.Getenv("BRW_REMOTE_URL"), "attach to an existing CDP endpoint, for example http://127.0.0.1:9222, or \"auto\" to find one: brw reads DevToolsActivePort in the user data directory (which is the only place an ephemeral port is written) and then tries the conventional loopback debugging ports, attaching only to something that answers /json/version as a browser. An endpoint brw cannot prove is on this machine is the off-host-cdp transport, not direct-cdp: downloads, uploads, the clipboard and brw_state are refused by name there, because each of them belongs to the host the browser runs on.")
 	flag.StringVar(&profileName, "profile", os.Getenv("BRW_PROFILE"), "workspace-allowed browser profile name")
 	flag.StringVar(&workspaceName, "workspace", os.Getenv("BRW_WORKSPACE"), "workspace binding name for default/restricted profiles")
@@ -158,7 +165,7 @@ func main() {
 	flag.Var(&extensions, "extension", "extension directory to load; repeatable")
 	flag.BoolVar(&loginMode, "login", false, "direct CDP: force a headed window even on a headless profile, so you can sign in once. The profile keeps the session; later headless runs on the same --user-data-dir are still signed in. Stop this daemon before starting the headless one — one Chrome per profile directory.")
 	flag.Var(&chromeArgs, "chrome-arg", "extra Chrome argument; repeatable")
-	flag.DurationVar(&timeout, "timeout", 20*time.Second, "default browser operation timeout")
+	flag.DurationVar(&timeout, "timeout", 20*time.Second, "default browser operation timeout; 0 removes the fixed limit, so an operation ends only by its own step timeouts or the caller's cancellation (a profile's operation_timeout sets it when this flag is not given)")
 	flag.BoolVar(&printSystemPrompt, "print-system-prompt", false, "print the recommended agent system prompt to stdout and exit")
 	flag.StringVar(&blockedDomains, "blocked-domains", os.Getenv("BRW_BLOCKED_DOMAINS"), "comma-separated domains the agent may never open (subdomains included); guardrail enforced on brw_open and brw_replay_request")
 	flag.StringVar(&allowedDomains, "allowed-domains", os.Getenv("BRW_ALLOWED_DOMAINS"), "comma-separated allowlist; when set, the agent may ONLY open these domains (and subdomains)")
@@ -250,6 +257,7 @@ func main() {
 
 	cfg.Extensions = extensions
 	cfg.ChromeArgs = chromeArgs
+	timeout = browser.OperationTimeout(timeout)
 	cfg.Timeout = timeout
 	cfg.WebMCP = enableWebMCP
 	cfg.Network = cdplaunch.NetworkEnvironment{
@@ -425,6 +433,14 @@ func main() {
 		}
 		if profile.Pacing != "" && !flagWasSet("pacing") && os.Getenv("BRW_PACING") == "" {
 			pacingValue = profile.Pacing
+		}
+		if profile.OperationTimeout != "" && !flagWasSet("timeout") {
+			parsed, err := browser.ParseOperationTimeout(profile.OperationTimeout)
+			if err != nil {
+				log.Fatalf("profile %q: %v", profile.Name, err)
+			}
+			timeout = parsed
+			cfg.Timeout = timeout
 		}
 		if profile.Headless && upstreamHTTP == "" {
 			headless = true
@@ -638,6 +654,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("upstream HTTP controller: %v", err)
 		}
+		upstreamToken, err := resolveUpstreamToken(upstreamTokenFile, os.Getenv("BRW_UPSTREAM_TOKEN"))
+		if err != nil {
+			log.Fatalf("upstream HTTP controller: %v", err)
+		}
+		upstream.SetAuthToken(upstreamToken)
 		verifyCtx, cancel := context.WithTimeout(context.Background(), timeout)
 		health, healthErr := upstream.Health(verifyCtx)
 		cancel()
@@ -941,6 +962,58 @@ func main() {
 	}
 
 	var api *httpapi.Server
+	var pageWatchAPI pagewatch.API
+	if upstreamHTTP != "" {
+		pageWatchAPI, _ = controller.(pagewatch.API)
+	} else if !strings.EqualFold(pageWatchRoot, "off") {
+		root := pageWatchRoot
+		if strings.EqualFold(root, "auto") {
+			watchIdentity := usageIdentity
+			if watchIdentity.UserDataDir == "" {
+				watchIdentity.UserDataDir = cfg.UserDataDir
+				if watchIdentity.UserDataDir == "" && manager != nil && cfg.RemoteURL == "" && cfg.BrowserWSURL == "" && cfg.Remote == nil {
+					watchIdentity.UserDataDir = cdplaunch.DefaultProfileDir("")
+				}
+			}
+			if watchIdentity.ProfileDirectory == "" {
+				watchIdentity.ProfileDirectory = cfg.ProfileDirectory
+			}
+			if watchIdentity.UserDataDir != "" {
+				watchIdentity.UserDataDir, err = filepath.Abs(watchIdentity.UserDataDir)
+				if err != nil {
+					log.Fatalf("page watcher profile path: %v", err)
+				}
+			}
+			if watchIdentity.Workspace == "" && watchIdentity.Profile == "" && watchIdentity.UserDataDir == "" {
+				switch {
+				case bridge != nil:
+					watchIdentity.Profile = "bridge:" + bridgeAddr
+				case cfg.Remote != nil:
+					watchIdentity.Profile = "provider:" + cfg.Remote.ProviderID + ":" + cfg.Remote.SessionID
+				case cfg.RemoteURL != "":
+					watchIdentity.Profile = "remote:" + cfg.RemoteURL
+				case cfg.BrowserWSURL != "":
+					watchIdentity.Profile = "remote:" + cfg.BrowserWSURL
+				}
+			}
+			root, err = pagewatch.DefaultRoot(watchIdentity)
+			if err != nil {
+				log.Fatalf("page watchers: %v", err)
+			}
+		}
+		watchers, watchErr := pagewatch.New(ctx, controller, root, navPolicy, consentGuard)
+		if watchErr != nil {
+			log.Fatalf("page watchers: %v", watchErr)
+		}
+		defer watchers.Close()
+		pageWatchAPI = watchers
+		if manager != nil {
+			manager.SetTabAccessGuard(watchers.CheckTabAccess)
+		}
+		if bridge != nil {
+			bridge.SetTabAccessGuard(watchers.CheckTabAccess)
+		}
+	}
 	if httpAddr != "" && httpAddr != "off" {
 		// usageIdentity, not runtimeIdentity: the resolved one carries Mode,
 		// Transport and Headless, which this process derives from its own flags
@@ -950,9 +1023,19 @@ func main() {
 		// surfaces on one daemon then disagreed about what they were driving,
 		// and a caller gating on transport silently got no answer.
 		api = httpapi.NewWithIdentity(httpAddr, controller, usageIdentity)
+		if strings.TrimSpace(httpTokenFile) != "" {
+			httpToken, err := readBearerTokenFile("http-token-file", httpTokenFile)
+			if err != nil {
+				log.Fatalf("http: %v", err)
+			}
+			api.SetAuthToken(httpToken)
+		} else if !httpBindIsLoopback(httpAddr) {
+			log.Printf("WARNING: --http %s is not loopback and no --http-token-file is set; anything that can reach it can drive this browser", httpAddr)
+		}
 		// /api/skill serves this binary's own copy of the agent manual, and the
 		// version is what lets a caller tell it apart from the copy on disk.
 		api.SetVersion(mcp.Version)
+		api.SetPageWatchAPI(pageWatchAPI)
 		api.SetNavigationPolicy(navPolicy)
 		api.SetSiteConsent(consentGuard)
 		api.SetApprovalGate(actionApprovalGate)
@@ -1032,6 +1115,7 @@ func main() {
 		// outlive an abandoned session.
 		go watchParentExit(stop)
 		server := mcp.NewWithToolProfile(controller, mcpToolProfile)
+		server.SetPageWatchAPI(pageWatchAPI)
 		server.SetNavigationPolicy(navPolicy)
 		server.SetSiteConsent(consentGuard)
 		server.SetApprovalGate(actionApprovalGate)
